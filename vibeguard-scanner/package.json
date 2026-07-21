@@ -1,0 +1,13 @@
+{
+  "name": "vibeguard",
+  "version": "0.1.0",
+  "description": "Security scanner for AI-built (vibe-coded) apps. Point it at a repo, get a plain-English report.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "vibeguard": "./cli.js"
+  },
+  "scripts": {
+    "scan": "node cli.js"
+  }
+}

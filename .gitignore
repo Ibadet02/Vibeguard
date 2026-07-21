@@ -1,0 +1,16 @@
+# dependencies
+node_modules/
+
+# netlify CLI local state
+.netlify/
+
+# local scanner output
+vibeguard-report.md
+report.md
+
+# editor / OS
+.DS_Store
+*.log
+
+# local-only agent settings
+.claude/settings.local.json

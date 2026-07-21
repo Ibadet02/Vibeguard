@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VibeGuard Scanner</title>
+<style>
+  :root {
+    --bg: #12141a; --panel: #1b1e27; --panel2: #232735; --text: #e8eaf0;
+    --muted: #9aa1b5; --accent: #4ade80; --border: #2e3342;
+    --crit: #f87171; --high: #fb923c; --med: #facc15; --info: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h1 .shield { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .row { display: flex; gap: 8px; }
+  input {
+    flex: 1; background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px; font: 14px/1.5 inherit; min-width: 0;
+  }
+  input:focus { outline: 1px solid var(--accent); }
+  button.primary {
+    background: var(--accent); color: #0d1a12; border: 0; border-radius: 10px;
+    padding: 12px 22px; font-size: 14px; font-weight: 700; cursor: pointer;
+  }
+  button.ghost {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .spin { display: none; margin-top: 16px; color: var(--muted); }
+  .err { display: none; margin-top: 16px; color: var(--crit); white-space: pre-wrap; }
+  .summary { display: none; margin-top: 20px; gap: 10px; }
+  .pill { border-radius: 8px; padding: 8px 14px; font-weight: 700; font-size: 14px; background: var(--panel); border: 1px solid var(--border); }
+  .pill b { font-size: 18px; }
+  .pill.crit b { color: var(--crit); } .pill.high b { color: var(--high); }
+  .pill.med b { color: var(--med); } .pill.info b { color: var(--info); }
+  .findings { margin-top: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 10px;
+  }
+  .card.critical { border-left-color: var(--crit); }
+  .card.high { border-left-color: var(--high); }
+  .card.medium { border-left-color: var(--med); }
+  .card.info { border-left-color: var(--info); }
+  .card h3 { margin: 0 0 6px; font-size: 15px; }
+  .card .where { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; margin-bottom: 8px; }
+  .card p { margin: 6px 0; font-size: 14px; }
+  .card .fixlabel { color: var(--accent); font-weight: 600; }
+  .sev { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 999px; margin-right: 8px; vertical-align: 2px; }
+  .sev.critical { background: #3d1418; color: var(--crit); } .sev.high { background: #3a2410; color: var(--high); }
+  .sev.medium { background: #3a3410; color: var(--med); } .sev.info { background: #12283f; color: var(--info); }
+  .toolbar { display: none; margin-top: 18px; gap: 8px; }
+  .clean { display: none; margin-top: 20px; background: #12281a; border: 1px solid #1e4d2e; border-radius: 10px; padding: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span class="shield">▲</span> VibeGuard Scanner</h1>
+  <div class="sub">Paste a public git URL or a local folder path. Runs on your machine, nothing leaves it. Reports are plain English.</div>
+
+  <div class="row">
+    <input id="target" placeholder="https://github.com/someone/their-app  or  /home/me/projects/app" />
+    <button class="primary" id="go">Scan</button>
+  </div>
+
+  <div class="spin" id="spin">Scanning... (cloning can take a few seconds)</div>
+  <div class="err" id="err"></div>
+
+  <div class="summary row" id="summary"></div>
+  <div class="clean" id="clean"><b>Clean scan.</b> None of the checks found a problem. No scanner can guarantee safety, but the common ways vibe-coded apps get burned are not present.</div>
+  <div class="toolbar row" id="toolbar">
+    <button class="ghost" id="copyMd">Copy report (markdown)</button>
+    <button class="ghost" id="dlMd">Download report.md</button>
+  </div>
+  <div class="findings" id="findings"></div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let lastMd = "";
+
+  async function scan() {
+    const target = $("target").value.trim();
+    if (!target) return;
+    $("err").style.display = "none";
+    $("summary").style.display = "none";
+    $("toolbar").style.display = "none";
+    $("clean").style.display = "none";
+    $("findings").innerHTML = "";
+    $("spin").style.display = "block";
+    $("go").disabled = true;
+    try {
+      const r = await fetch("/api/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Scan failed");
+      lastMd = data.markdown;
+      render(data);
+    } catch (e) {
+      $("err").textContent = e.message;
+      $("err").style.display = "block";
+    } finally {
+      $("spin").style.display = "none";
+      $("go").disabled = false;
+    }
+  }
+
+  function render(data) {
+    const counts = { critical: 0, high: 0, medium: 0, info: 0 };
+    for (const f of data.findings) counts[f.severity]++;
+
+    const s = $("summary");
+    s.innerHTML =
+      pill("crit", counts.critical, "critical") + pill("high", counts.high, "high") +
+      pill("med", counts.medium, "medium") + pill("info", counts.info, "info") +
+      `<div class="pill" style="margin-left:auto;color:var(--muted);font-weight:400">${data.fileCount} files in ${data.seconds}s</div>`;
+    s.style.display = "flex";
+    $("toolbar").style.display = "flex";
+
+    if (data.findings.length === 0) {
+      $("clean").style.display = "block";
+      return;
+    }
+
+    const order = { critical: 0, high: 1, medium: 2, info: 3 };
+    const sorted = [...data.findings].sort((a, b) => order[a.severity] - order[b.severity]);
+    const box = $("findings");
+    for (const f of sorted) {
+      const card = document.createElement("div");
+      card.className = "card " + f.severity;
+      card.innerHTML =
+        `<h3><span class="sev ${f.severity}">${f.severity.toUpperCase()}</span>${esc(f.title)}</h3>` +
+        (f.file ? `<div class="where">${esc(f.file)}${f.line ? ":" + f.line : ""}</div>` : "") +
+        `<p>${esc(f.detail)}</p>` +
+        `<p><span class="fixlabel">Fix:</span> ${esc(f.fix)}</p>`;
+      box.appendChild(card);
+    }
+  }
+
+  function pill(cls, n, label) {
+    return `<div class="pill ${cls}"><b>${n}</b> ${label}</div>`;
+  }
+  function esc(s) {
+    const d = document.createElement("div");
+    d.textContent = s ?? "";
+    return d.innerHTML;
+  }
+
+  $("go").onclick = scan;
+  $("target").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); });
+
+  $("copyMd").onclick = () => {
+    navigator.clipboard.writeText(lastMd);
+    $("copyMd").textContent = "Copied";
+    setTimeout(() => ($("copyMd").textContent = "Copy report (markdown)"), 1200);
+  };
+  $("dlMd").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([lastMd], { type: "text/markdown" }));
+    a.download = "vibeguard-report.md";
+    a.click();
+  };
+</script>
+</body>
+</html>
