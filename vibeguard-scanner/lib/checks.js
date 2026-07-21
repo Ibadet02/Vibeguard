@@ -302,8 +302,23 @@ export function checkSupabaseRls(files) {
 
 /* ---------------- API routes without auth ---------------- */
 
-const AUTH_HINTS = /getServerSession|auth\(\)|requireAuth|verifyToken|jsonwebtoken|jwt\.verify|clerk|supabase\.auth|getToken|withAuth|session|authorization|api[_-]?key|bearer/i;
+// Auth hints now include signature-based verification: a webhook that checks an
+// HMAC (GitHub's X-Hub-Signature-256, Stripe, Svix, etc.) IS authenticated, even
+// though it has no session or bearer token. Missing this flagged a correctly
+// signature-verified GitHub webhook as "no auth".
+const AUTH_HINTS = /getServerSession|auth\(\)|requireAuth|verifyToken|jsonwebtoken|jwt\.verify|clerk|supabase\.auth|getToken|withAuth|session|authorization|api[_-]?key|bearer|x-hub-signature|verifySignature|createHmac|crypto\.subtle|timingSafeEqual|svix|stripe-signature|\bhmac\b/i;
 const MUTATING_HINT = /\b(insert|update|delete|create|write|post|put|patch|remove|destroy)\b/i;
+
+// A route with no auth only matters if it actually does something with data or
+// has side effects. A handler that just returns a static 404/redirect (e.g. a
+// disabled catch-all like app/api/auth/[...nextauth] that returns "Not found")
+// has nothing to protect, so require evidence of real work before flagging.
+const ROUTE_SIDE_EFFECT = /\bawait\b|supabase|prisma|drizzle|mongoose|\.query\(|\bfetch\(|createClient|\bfrom\s*\(|\.rpc\(|redis|process\.env|readFile|writeFile/i;
+
+// Evidence the endpoint is deliberately public but abuse-controlled. A route
+// that rate-limits callers is usually public on purpose (webhooks, public read
+// APIs), so "no login" is expected, not a high-severity hole.
+const RATE_LIMIT_HINT = /rate[-_ ]?limit|ratelimit|\bretry-?after\b|\b429\b|@upstash\/ratelimit/i;
 
 export function checkUnprotectedRoutes(files) {
   const findings = [];
@@ -312,16 +327,21 @@ export function checkUnprotectedRoutes(files) {
     /(^|\/)api\/.*route\.(js|ts)$/.test(f.rel)
   );
   for (const f of routes) {
+    if (TEST_PATH.test(f.rel) || /\.(test|spec)\./.test(f.rel)) continue;
     if (AUTH_HINTS.test(f.content)) continue;
+    if (!ROUTE_SIDE_EFFECT.test(f.content)) continue; // no-op / static responder, nothing to protect
     const mutates = MUTATING_HINT.test(f.content);
+    const rateLimited = RATE_LIMIT_HINT.test(f.content);
+    const severity = rateLimited ? (mutates ? "medium" : "info") : mutates ? "high" : "medium";
     findings.push({
-      severity: mutates ? "high" : "medium",
+      severity,
       title: `API route ${f.rel} has no auth check that I can see`,
       file: f.rel,
       line: 1,
-      detail:
-        "This endpoint appears to accept requests from anyone on the internet, no session check, token check, or key check was found in the file." +
-        (mutates ? " It also looks like it writes or deletes data, which makes an open endpoint riskier." : ""),
+      detail: rateLimited
+        ? "This endpoint has no session, token, or key check, but it does rate-limit callers, which usually means it is public on purpose. That is fine if it only reads or refreshes public, non-sensitive data. Worth a quick check that it can't be used to reach another user's private data or run up cost on your account."
+        : "This endpoint appears to accept requests from anyone on the internet, no session check, token check, or key check was found in the file." +
+          (mutates ? " It also looks like it writes or deletes data, which makes an open endpoint riskier." : ""),
       fix: "If this route is meant to be public, you can ignore this. Otherwise add an auth check at the top (verify the user's session or token and return 401 if missing) before doing any work. Also make sure it validates its inputs.",
     });
   }
@@ -650,6 +670,9 @@ export function checkCors(files) {
   const findings = [];
   const corsRe = /Access-Control-Allow-Origin['"]?\s*[,:]\s*['"]\*['"]/;
   for (const f of files) {
+    // Wide-open CORS in a test mock or e2e harness (e.g. e2e/mock-supabase.mjs)
+    // is not a production concern.
+    if (TEST_PATH.test(f.rel) || /\.(test|spec)\./.test(f.rel)) continue;
     const m = corsRe.exec(f.content);
     const hit = m ? m.index : -1;
     if (hit !== -1) {
