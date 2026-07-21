@@ -16,6 +16,7 @@ import {
   checkSecurityHeaders,
   checkCors,
 } from "./checks.js";
+import { aiReview } from "./ai-review.js";
 import { renderReport } from "./report.js";
 
 const exec = promisify(execFile);
@@ -60,6 +61,16 @@ export async function runScan(target) {
       ...checkSecurityHeaders(files),
       ...checkCors(files),
     ];
+
+    // Optional AI reasoning pass. Layers logic/authorization findings on top of
+    // the deterministic checks. Env-gated and non-fatal: if it is disabled or
+    // the model is unreachable, we just keep the deterministic findings.
+    const ai = await aiReview({
+      files,
+      deterministicFindings: findings,
+      log: (m) => console.error(m),
+    });
+    findings.push(...ai.findings);
 
     const markdown = renderReport({
       target,

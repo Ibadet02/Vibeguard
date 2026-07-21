@@ -41,6 +41,7 @@ export function renderReport({ target, findings, checkedAt }) {
     for (const f of bySev[sev]) {
       md += `### ${f.title}\n\n`;
       if (f.file) md += `**Where:** \`${f.file}${f.line ? `:${f.line}` : ""}\`\n\n`;
+      if (f.source === "ai") md += `**Found by:** AI reasoning pass (reviews app logic, not just patterns)\n\n`;
       md += `**What this means:** ${f.detail}\n\n`;
       md += `**How to fix:** ${f.fix}\n\n`;
     }
@@ -55,7 +56,7 @@ export function renderConsole({ findings }) {
   let out = "\n";
   for (const sev of SEV_ORDER) {
     for (const f of bySev[sev]) {
-      out += `${SEV_EMOJI[sev]} [${sev.toUpperCase()}] ${f.title}${f.file ? `  (${f.file}${f.line ? ":" + f.line : ""})` : ""}\n`;
+      out += `${SEV_EMOJI[sev]} [${sev.toUpperCase()}]${f.source === "ai" ? " (AI)" : ""} ${f.title}${f.file ? `  (${f.file}${f.line ? ":" + f.line : ""})` : ""}\n`;
     }
   }
   const c = bySev.critical.length, h = bySev.high.length;
