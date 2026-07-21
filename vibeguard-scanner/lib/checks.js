@@ -30,6 +30,10 @@ function isClientFile(rel) {
   return CLIENT_PATH.test(rel) && !/^(pages\/api|app\/api|src\/server)/i.test(rel);
 }
 
+function isCodeFile(rel) {
+  return /\.(js|jsx|ts|tsx|mjs|cjs|vue|svelte|astro)$/.test(rel);
+}
+
 export function checkSecretsInCode(files) {
   const findings = [];
   for (const f of files) {
@@ -237,10 +241,19 @@ async function isEnvIgnored(root, rel, gitignore) {
 // CREATE TABLE without RLS is normal, so this check must not fire there.
 function usesSupabase(files) {
   for (const f of files) {
+    // A real dependency on a Supabase client library.
     if (path.basename(f.rel) === "package.json" && /"@supabase\//.test(f.content)) return true;
+    // A Supabase CLI project is wired up.
     if (f.rel === "supabase/config.toml" || f.rel.endsWith("/supabase/config.toml")) return true;
-    if (/SUPABASE_(URL|ANON_KEY|SERVICE_ROLE)/.test(f.content)) return true;
+    // The client library is actually imported/required somewhere.
     if (/(?:from\s+|require\(\s*)['"]@supabase\//.test(f.content)) return true;
+    // A SUPABASE_ env var is actually consumed by application code
+    // (process.env / import.meta.env). We deliberately do NOT treat SUPABASE_
+    // names appearing in .env / .env.example templates as evidence: those files
+    // routinely list unused or explicitly deprecated vars with placeholder
+    // values, and matching them fired 12 bogus RLS findings on a Prisma+Neon
+    // app whose only Supabase trace was a "DEPRECATED" block in .env.example.
+    if (isCodeFile(f.rel) && /(?:process\.env|import\.meta\.env)\.[A-Za-z_]*SUPABASE_[A-Za-z_]*/.test(f.content)) return true;
   }
   return false;
 }
@@ -340,6 +353,67 @@ export function checkIdorPatterns(files) {
   return findings;
 }
 
+/* ---------------- identity trusted from a client-supplied header ---------------- */
+
+// A backend that decides *who the user is* by reading a plain request header
+// (x-user-id and friends) is trusting the client. Whoever makes the request
+// sets the headers, so unless the value is cryptographically bound (a verified
+// JWT/session), anyone can send `x-user-id: <victim>` and act as that user.
+// This is the "proxy injects the header after auth, but the backend is also
+// reachable directly" multi-tenant bypass, the exact bug that a real Express
+// service shipped (auth derived from req.headers['x-user-id'] with no verify).
+//
+// Fires on: server-side code that READS an identity header.
+// Must NOT fire on:
+//   - the proxy/edge layer that SETS the header after real auth (`.set(...)`),
+//   - a file that verifies a real credential itself (JWT/session/Clerk/etc.),
+//   - client-side code and tests.
+const IDENTITY_HEADER = "x-(?:user-?id|user|uid|account-?id|tenant-?id|customer-?id|org-?id|auth-?user(?:-?id)?)";
+
+const HEADER_READ_RE = new RegExp(
+  // req.headers['x-user-id'] / request.headers["x-user-id"]
+  `(?:\\breq|\\brequest|\\bctx|\\bevent)\\b[\\w.?]*\\.headers\\s*\\[\\s*['"\`](${IDENTITY_HEADER})['"\`]\\s*\\]` +
+  // req.get('x-user-id') / req.header('x-user-id') / headers.get('x-user-id')
+  `|(?:\\breq|\\brequest|\\bctx|\\bheaders|\\bhdrs)\\b[\\w.?]*\\.(?:get|header)\\s*\\(\\s*['"\`](${IDENTITY_HEADER})['"\`]\\s*\\)`,
+  "gi"
+);
+
+// The file independently verifies a real credential, so the header is likely a
+// value it derived after auth rather than the sole trust anchor.
+const REAL_AUTH_RE =
+  /jwt\.verify|jsonwebtoken|jwtVerify|createRemoteJWKSet|authenticateRequest|verifyToken|verifyIdToken|getServerSession|next-auth|@clerk\/backend|clerkClient|getAuth\s*\(|passport\.|verifySessionCookie|lucia/i;
+
+export function checkTrustedIdentityHeader(files) {
+  const findings = [];
+  for (const f of files) {
+    if (!isCodeFile(f.rel)) continue;
+    if (isClientFile(f.rel)) continue;
+    if (TEST_PATH.test(f.rel) || /\.(test|spec)\./.test(f.rel)) continue;
+    if (REAL_AUTH_RE.test(f.content)) continue;
+    HEADER_READ_RE.lastIndex = 0;
+    let m;
+    const seen = new Set();
+    while ((m = HEADER_READ_RE.exec(f.content)) !== null) {
+      const header = (m[1] || m[2] || "").toLowerCase();
+      if (!header || seen.has(header)) continue;
+      seen.add(header);
+      findings.push({
+        severity: "critical",
+        title: `Auth bypass: user identity trusted from the "${header}" request header`,
+        file: f.rel,
+        line: lineOf(f.content, m.index),
+        detail:
+          `This code decides which user a request belongs to by reading the \`${header}\` header straight off the request. Request headers are set by whoever makes the call, so anyone can send \`${header}: <someone-elses-id>\` and be treated as that user. ` +
+          "Nothing here checks a signed token or session, so if this service is reachable directly (its URL is usually public, and CORS does not stop non-browser calls like curl), an attacker can read and change every other user's data by changing one header. That is a full multi-tenant / account takeover.",
+        fix:
+          "Do not treat a plain header as proof of identity. Verify a real credential on this service and read the user id from it: check the session or JWT here (using your auth provider's server SDK) and take the user id from the verified token, never from a header. " +
+          "If you must keep a trusted-proxy setup, require a strong shared secret between the proxy and this service (compared with crypto.timingSafeEqual), strip any inbound copy of this header at the proxy, block direct internet access to this service, and remove any `?userId=` / body `userId` fallbacks.",
+      });
+    }
+  }
+  return findings;
+}
+
 /* ---------------- dependency CVEs ---------------- */
 
 // package-lock.json is not the only lockfile in the world. pnpm workspaces,
@@ -361,6 +435,38 @@ function detectPackageManager(files) {
   if (m) return m[1];
   if (files.some((f) => f.rel === "pnpm-workspace.yaml")) return "pnpm";
   return "npm";
+}
+
+// Run `<tool> audit --json` (optionally scoped to prod deps) and bucket the
+// vulnerable package names by severity. audit exits non-zero when vulns exist,
+// so we read stdout off the thrown error too.
+async function auditBuckets(tool, root, extraArgs) {
+  const { stdout } = await exec(tool, ["audit", "--json", ...extraArgs], {
+    cwd: root,
+    maxBuffer: 20 * 1024 * 1024,
+  }).catch((e) => ({ stdout: e.stdout || "" }));
+  const data = JSON.parse(stdout);
+  // A successful audit always includes a vulnerabilities (npm v7+) or
+  // advisories (pnpm / npm v6) object, even when empty. If neither is present
+  // the audit actually failed (offline, registry unreachable, EUSAGE) and
+  // returned a JSON error object, so treat that as a failure rather than
+  // silently reporting zero dependency issues.
+  if (!data.vulnerabilities && !data.advisories) {
+    throw new Error(data.error?.summary || data.error?.code || "audit returned no results");
+  }
+  const bySev = { critical: [], high: [], moderate: [], low: [] };
+  if (data.vulnerabilities) {
+    // npm v7+ format
+    for (const [name, v] of Object.entries(data.vulnerabilities)) {
+      if (bySev[v.severity] && !bySev[v.severity].includes(name)) bySev[v.severity].push(name);
+    }
+  } else if (data.advisories) {
+    // pnpm / npm v6 format
+    for (const a of Object.values(data.advisories)) {
+      if (bySev[a.severity] && !bySev[a.severity].includes(a.module_name)) bySev[a.severity].push(a.module_name);
+    }
+  }
+  return bySev;
 }
 
 export async function checkDependencies(root, files) {
@@ -399,41 +505,56 @@ export async function checkDependencies(root, files) {
   if (lock.pm === "npm" || lock.pm === "pnpm") {
     const tool = lock.pm;
     try {
-      const { stdout } = await exec(tool, ["audit", "--json"], {
-        cwd: root,
-        maxBuffer: 20 * 1024 * 1024,
-      }).catch((e) => ({ stdout: e.stdout || "" })); // audit exits non-zero when vulns exist
-      const data = JSON.parse(stdout);
-      const bySev = { critical: [], high: [], moderate: [], low: [] };
-      if (data.vulnerabilities) {
-        // npm v7+ format
-        for (const [name, v] of Object.entries(data.vulnerabilities)) {
-          if (bySev[v.severity]) bySev[v.severity].push(name);
-        }
-      } else if (data.advisories) {
-        // pnpm / npm v6 format
-        for (const a of Object.values(data.advisories)) {
-          if (bySev[a.severity] && !bySev[a.severity].includes(a.module_name)) bySev[a.severity].push(a.module_name);
-        }
-      }
+      const full = await auditBuckets(tool, root, []);
+      // Second pass scoped to production dependencies. A CVE that only affects
+      // local build/dev tooling (a test runner, a bundler plugin) is not
+      // reachable in the deployed app, so it should not read as a "fix today"
+      // critical. Best-effort: if this fails, treat everything as production.
+      let prodSet = null;
+      try {
+        const prodArgs = tool === "npm" ? ["--omit=dev"] : ["--prod"];
+        const prod = await auditBuckets(tool, root, prodArgs);
+        prodSet = new Set([...prod.critical, ...prod.high, ...prod.moderate, ...prod.low]);
+      } catch {}
+
       const fixCmd = tool === "npm"
         ? "Run `npm audit fix` (safe upgrades), then `npm audit` again and review what remains."
         : "Run `pnpm audit` for the full list, upgrade with `pnpm update <package>`, and use `pnpm audit --fix` (writes overrides) for anything that can't upgrade cleanly.";
+
       for (const sev of ["critical", "high"]) {
-        if (bySev[sev].length) {
+        const names = prodSet ? full[sev].filter((n) => prodSet.has(n)) : full[sev];
+        if (names.length) {
           findings.push({
-            severity: sev === "critical" ? "critical" : "high",
-            title: `${bySev[sev].length} ${bySev[sev].length === 1 ? "dependency" : "dependencies"} with known ${sev} vulnerabilities`,
+            severity: sev,
+            title: `${names.length} ${names.length === 1 ? "dependency" : "dependencies"} with known ${sev} vulnerabilities`,
             file: lock.file,
             line: 1,
             detail:
-              `Packages with publicly documented ${sev} security holes (CVEs): ${bySev[sev].slice(0, 8).join(", ")}${bySev[sev].length > 8 ? "..." : ""}. ` +
+              `Packages with publicly documented ${sev} security holes (CVEs): ${names.slice(0, 8).join(", ")}${names.length > 8 ? "..." : ""}. ` +
               "These are frozen at whatever version the AI generated. Attackers can look up exactly how to exploit each one.",
             fix: `${fixCmd} Re-test the app after upgrading.`,
           });
         }
       }
-      const modLow = bySev.moderate.length + bySev.low.length;
+
+      // Critical/high advisories that only affect dev/build tooling: real, but
+      // not exposed by the deployed app, so a cleanup note rather than a fire.
+      const devHigh = prodSet
+        ? [...full.critical, ...full.high].filter((n) => !prodSet.has(n))
+        : [];
+      if (devHigh.length) {
+        findings.push({
+          severity: "info",
+          title: `${devHigh.length} dev-only ${devHigh.length === 1 ? "dependency has" : "dependencies have"} high/critical advisories`,
+          file: lock.file,
+          line: 1,
+          detail:
+            `These advisories are in build or dev tooling (${devHigh.slice(0, 8).join(", ")}${devHigh.length > 8 ? "..." : ""}) that runs on your machine or in CI, not in the app you deploy, so an attacker hitting your live site can't reach them. Still worth cleaning up so they don't ship if your build setup changes.`,
+          fix: `Run \`${tool} audit\` to see them and upgrade the dev tool when convenient.`,
+        });
+      }
+
+      const modLow = full.moderate.length + full.low.length;
       if (modLow > 0) {
         findings.push({
           severity: "info",

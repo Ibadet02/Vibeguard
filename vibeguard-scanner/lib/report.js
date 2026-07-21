@@ -46,7 +46,7 @@ export function renderReport({ target, findings, checkedAt }) {
     }
   }
 
-  md += `---\n\n*Scanned by [VibeGuard](https://vibeguard-6809.netlify.app), a security scanner for AI-built apps. Checks: hardcoded keys and tokens, hardcoded fallback secrets, secrets in frontend bundles, committed .env files, Supabase Row Level Security, unauthenticated API routes, IDOR patterns, dependency CVEs, security headers, CORS.*\n`;
+  md += `---\n\n*Scanned by [VibeGuard](https://vibeguard-6809.netlify.app), a security scanner for AI-built apps. Checks: hardcoded keys and tokens, hardcoded fallback secrets, secrets in frontend bundles, committed .env files, Supabase Row Level Security, unauthenticated API routes, identity trusted from request headers, IDOR patterns, dependency CVEs, security headers, CORS.*\n`;
   return md;
 }
 
