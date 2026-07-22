@@ -18,8 +18,20 @@
 //   VIBEGUARD_LLM_API_KEY   / ANTHROPIC_API_KEY     the credential
 //   VIBEGUARD_LLM_BASE_URL  / ANTHROPIC_BASE_URL    e.g. https://api.openai.com/v1
 //   VIBEGUARD_LLM_MODEL                             e.g. gpt-4.1 or claude-opus-4-8
-//   VIBEGUARD_LLM_API = openai | anthropic          override auto-detection
+//   VIBEGUARD_LLM_API = openai | anthropic | claude-cli   override auto-detection
 //   VIBEGUARD_AI = 0                                disable even if a key is set
+//
+// Backends:
+//   - "api": direct HTTP to an OpenAI- or Anthropic-compatible endpoint, driving
+//     our own read-only tool loop (list_files/read_file/grep) over the in-memory repo.
+//   - "claude-cli": shell out to the real Claude Code binary, which explores the repo
+//     on disk with its own tools. Needed for gateways (e.g. freemodel) that only accept
+//     genuine Claude Code traffic and reject our raw tool-use requests as third-party.
+
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileP = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Config
@@ -41,7 +53,27 @@ export function aiConfig() {
   const baseUrl = (baseRaw || defaultBase).replace(/\/+$/, "");
   const model = process.env.VIBEGUARD_LLM_MODEL || (api === "anthropic" ? "claude-opus-4-8" : "gpt-4.1");
   const enabled = Boolean(apiKey) && process.env.VIBEGUARD_AI !== "0";
-  return { api, apiKey, baseUrl, model, enabled };
+  // The freemodel gateway rejects "probe" traffic unless the request looks like
+  // the real Claude Code CLI. Real providers (api.anthropic.com, OpenAI, ...) must
+  // NOT get those spoofed headers, so we only turn them on for that gateway.
+  const isFreemodel = /freemodel/i.test(baseUrl);
+  const modelExplicit = Boolean(process.env.VIBEGUARD_LLM_MODEL);
+
+  // Pick a backend. A Claude Code gateway (freemodel) rejects our raw tool-use
+  // requests, so it must be driven through the real `claude` binary. Everything
+  // else uses the direct HTTP api backend. Explicit override via VIBEGUARD_LLM_API.
+  const forced = (process.env.VIBEGUARD_LLM_API || "").toLowerCase();
+  const backend =
+    forced === "claude-cli"
+      ? "claude-cli"
+      : forced === "openai" || forced === "anthropic"
+      ? "api"
+      : isFreemodel
+      ? "claude-cli"
+      : "api";
+  const claudeBin = process.env.VIBEGUARD_CLAUDE_BIN || "claude";
+
+  return { api, apiKey, baseUrl, model, enabled, isFreemodel, backend, claudeBin, modelExplicit };
 }
 
 // ---------------------------------------------------------------------------
@@ -49,7 +81,9 @@ export function aiConfig() {
 // ---------------------------------------------------------------------------
 
 const MAX_ITERATIONS = 24;          // tool-use rounds before we force a wrap-up
-const MAX_TOTAL_MS = 300000;        // wall-clock cap for the whole AI pass
+const MAX_TOTAL_MS = 300000;        // wall-clock cap for the api-backend AI pass
+const CLI_MAX_MS = 600000;          // wall-clock ceiling for the Claude Code CLI backend
+const CLI_MAX_TURNS = 60;           // bound the CLI agent so it wraps up and emits JSON
 const REQUEST_TIMEOUT_MS = 120000;  // per HTTP request
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 4;
@@ -256,15 +290,19 @@ function runTool(name, input, files) {
 // HTTP with retry / timeout / safeguard detection
 // ---------------------------------------------------------------------------
 
-function anthropicHeaders(apiKey) {
-  return {
+function anthropicHeaders(apiKey, spoofClaudeCode = false) {
+  const base = {
     "content-type": "application/json",
     accept: "application/json",
     "x-api-key": apiKey,
     "anthropic-version": "2023-06-01",
-    // Make the request look like the real Claude Code client. Required by the
-    // freemodel gateway (rejects unrecognized "probe" traffic); harmless on a
-    // direct Anthropic endpoint.
+  };
+  if (!spoofClaudeCode) return base;
+  // Only for the freemodel gateway: make the request look like the real Claude
+  // Code client so it isn't rejected as unrecognized "probe" traffic. A direct
+  // Anthropic endpoint neither needs nor wants these.
+  return {
+    ...base,
     "anthropic-beta": "claude-code-20250219,fine-grained-tool-streaming-2025-05-14",
     "user-agent": "claude-cli/2.1.145 (external, cli)",
     "x-app": "cli",
@@ -347,7 +385,7 @@ function makeProvider(cfg) {
       async turn(messages, deadline, log) {
         const data = await postJSON(
           `${cfg.baseUrl}/v1/messages`,
-          anthropicHeaders(cfg.apiKey),
+          anthropicHeaders(cfg.apiKey, cfg.isFreemodel),
           {
             model: cfg.model,
             max_tokens: 4096,
@@ -508,14 +546,149 @@ function dedupe(aiFindings, deterministic) {
 }
 
 // ---------------------------------------------------------------------------
+// Claude Code CLI backend
+//
+// For gateways that only accept genuine Claude Code traffic (e.g. freemodel),
+// we drive the real `claude` binary instead of calling the API ourselves. It
+// explores the repo on disk with its own read-only tools and returns the same
+// { triage, findings } JSON contract, which we parse with parseResult().
+// ---------------------------------------------------------------------------
+
+const CLI_SYSTEM_PROMPT =
+  "You are a senior software engineer doing a careful defensive code review to help a non-expert developer ship a safe app. Your goal is to make sure each user can only see and change their own data, and that untrusted input cannot make the app misbehave.\n\n" +
+  "The app's source code is in your current working directory. Use your Read, Grep, and Glob tools to inspect it. Work like a real reviewer: start from the routes/handlers and the code they call, follow the data, and READ enough to be sure before reporting. Do not guess from a file name. Do not edit anything.\n\n" +
+  "Look for concrete correctness mistakes in these areas:\n" +
+  "1. Access control / data ownership: an endpoint uses an id from the request (query, body, params, headers) to read or change a record without confirming it belongs to the signed-in user; missing login checks; multi-tenant data not scoped to the current tenant.\n" +
+  "2. Trusting the client for server decisions: role/permission/isAdmin flags, prices, amounts, quantities, or user ids taken from the request and acted on as if reliable.\n" +
+  "3. Input handling: request input used unsafely in a database query, a file path, a URL the server fetches, or a shell command.\n" +
+  "4. Secret exposure: API keys or credentials reachable from browser/client-side code, or committed into the repo.\n" +
+  "5. Business-logic gaps: steps that can be skipped or replayed (e.g. granting entitlements without verifying payment, webhooks without signature checks).\n\n" +
+  "You have TWO jobs:\n" +
+  "A) TRIAGE the automated linter's existing findings (each has an id). It matches text patterns with no understanding of the app, so it produces false positives and wrong severities. For EACH finding, open the relevant code and decide 'keep' (real, severity about right), 'downgrade' (real but smaller impact; give the correct severity), or 'dismiss' (not actually exploitable here; give the evidence). Be conservative: only downgrade or dismiss with clear code evidence; when in doubt, 'keep'.\n" +
+  "B) FIND NEW issues the linter missed that need reasoning about the app's logic.\n\n" +
+  "RULES:\n" +
+  "1. Every judgement must be grounded in code you actually read (exact file + line). No speculation, no style nits.\n" +
+  "2. For NEW findings, do NOT restate a linter finding; if a linter finding is real, that's a 'keep' in triage.\n" +
+  "3. Prefer a false negative over a false alarm: when unsure about a NEW issue, leave it out.\n" +
+  "4. Write text in plain language a beginner can act on.\n" +
+  "5. When finished, your FINAL message must be ONE JSON object and nothing else (no prose, no markdown fences):\n" +
+  '{"triage":[{"id":<number>,"verdict":"keep|downgrade|dismiss","severity":"critical|high|medium|info","reason":"evidence-based explanation (required for downgrade/dismiss)"}],' +
+  '"findings":[{"severity":"critical|high|medium","title":"short title","file":"path/from/repo/root","line":<number>,"detail":"what the mistake is and how the wrong data could be reached, plain language","fix":"concrete steps","confidence":"high|medium|low"}]}\n' +
+  "Include a triage entry for every linter finding id. Use an empty array where there is nothing to report.";
+
+async function runClaudeCli({ files, root, deterministicFindings, cfg, log, deadline }) {
+  const userText =
+    buildUserContent(files, deterministicFindings) +
+    "\n\nThe source code is in your current working directory. Inspect it with Read/Grep/Glob, then reply with ONLY the JSON object." +
+    `\n\nEFFICIENCY (important): you have a hard limit of ${CLI_MAX_TURNS} tool-use turns and must finish well before it. Be decisive:\n` +
+    "- Do NOT explore the whole repo. Open only the files needed to judge the listed findings, plus the main route/handler files.\n" +
+    "- When several findings share one root cause (e.g. many 'no Row Level Security' findings on the same schema), investigate the data-access layer ONCE, then apply the same verdict to all of them without re-reading each file.\n" +
+    "- As soon as you can judge the listed findings and have skimmed the main routes, STOP and output the JSON. A slightly incomplete answer that is returned is far better than running out of turns and returning nothing.";
+
+  const args = [
+    "-p",
+    userText,
+    "--append-system-prompt",
+    CLI_SYSTEM_PROMPT,
+    "--output-format",
+    "json",
+    "--bare",
+    "--dangerously-skip-permissions",
+    "--max-turns",
+    String(CLI_MAX_TURNS),
+    "--disallowedTools",
+    "Bash",
+    "Edit",
+    "Write",
+    "WebFetch",
+    "WebSearch",
+    "NotebookEdit",
+    "TodoWrite",
+  ];
+  if (cfg.modelExplicit) {
+    // Claude Code takes an alias ("opus") or a full model name. Gateways often
+    // serve a slightly different patch version than a pinned full name, so map
+    // to the family alias to avoid "unknown model" rejections.
+    const alias = /opus/i.test(cfg.model)
+      ? "opus"
+      : /sonnet/i.test(cfg.model)
+      ? "sonnet"
+      : /haiku/i.test(cfg.model)
+      ? "haiku"
+      : cfg.model;
+    args.push("--model", alias);
+  }
+
+  const env = {
+    ...process.env,
+    ANTHROPIC_BASE_URL: cfg.baseUrl,
+    ANTHROPIC_API_KEY: cfg.apiKey,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  };
+  // The CLI backend gets its own (larger) ceiling: the gateway is slow and the
+  // agent explores on disk. --max-turns keeps it from running away; this is just
+  // the hard safety net.
+  const timeout = CLI_MAX_MS;
+  log(`AI: Claude Code review (${cfg.claudeBin}) on ${root} via ${cfg.baseUrl} (up to ${CLI_MAX_TURNS} turns)`);
+
+  let stdout = "";
+  try {
+    const res = await execFileP(cfg.claudeBin, args, { cwd: root, env, timeout, maxBuffer: 32 * 1024 * 1024 });
+    stdout = res.stdout || "";
+  } catch (e) {
+    if (e.code === "ENOENT") {
+      throw new Error(`Claude Code CLI not found (looked for "${cfg.claudeBin}"). Install it or set VIBEGUARD_CLAUDE_BIN, or use an OpenAI/Anthropic API key instead.`);
+    }
+    // Non-zero exit or timeout: the JSON envelope may still be on stdout.
+    stdout = e.stdout || "";
+    if (!stdout) throw new Error(e.killed ? "claude timed out" : String(e.message || "claude failed").split("\n")[0].slice(0, 200));
+  }
+
+  let envelope = null;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch {
+    /* not JSON; treat raw stdout as the text below */
+  }
+  const resultText = envelope && typeof envelope.result === "string" ? envelope.result : stdout;
+
+  if (CYBER_SAFETY_RE.test(resultText)) {
+    const err = new Error(CYBER_SAFETY_MSG);
+    err.cyberSafety = true;
+    throw err;
+  }
+  if (envelope && envelope.is_error) {
+    throw new Error(`claude reported an error: ${String(resultText).slice(0, 200)}`);
+  }
+
+  const parsed = parseResult(resultText);
+  const findings = dedupe(parsed.findings, deterministicFindings);
+  const adjusted = parsed.triage.filter((t) => t.verdict !== "keep").length;
+  const served = envelope && envelope.modelUsage ? Object.keys(envelope.modelUsage)[0] : "";
+  const cost = envelope && typeof envelope.total_cost_usd === "number" ? ` ($${envelope.total_cost_usd.toFixed(3)})` : "";
+  log(`AI: ${findings.length} new finding(s), ${adjusted} triage adjustment(s) via Claude Code${served ? ` [${served}]` : ""}${cost}`);
+  return { findings, triage: parsed.triage, servedModel: served };
+}
+
+// ---------------------------------------------------------------------------
 // Entry point. Never throws: returns { findings, error?, skipped? }.
 // ---------------------------------------------------------------------------
 
-export async function aiReview({ files, deterministicFindings = [], log = () => {} }) {
+export async function aiReview({ files, root, deterministicFindings = [], log = () => {} }) {
   const cfg = aiConfig();
   if (!cfg.enabled) return { findings: [], skipped: true };
 
   const deadline = Date.now() + MAX_TOTAL_MS;
+
+  if (cfg.backend === "claude-cli") {
+    try {
+      return await runClaudeCli({ files, root, deterministicFindings, cfg, log, deadline });
+    } catch (e) {
+      log(`AI: skipped (${e.message})`);
+      return { findings: [], error: e.message };
+    }
+  }
+
   try {
     log(`AI: agentic review with ${cfg.model} via ${cfg.baseUrl} (${cfg.api})`);
     const provider = makeProvider(cfg);

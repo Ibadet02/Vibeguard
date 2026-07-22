@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./lib/env.js";
 import { writeFile } from "node:fs/promises";
 import { runScan } from "./lib/scan.js";
 import { renderConsole } from "./lib/report.js";
@@ -26,10 +27,21 @@ async function main() {
   if (!target) return usage();
 
   console.log(`Scanning ${target} ...`);
-  const { findings, markdown } = await runScan(target);
+  const { findings, markdown, ai } = await runScan(target);
 
   await writeFile(outFile, markdown, "utf8");
   console.log(renderConsole({ findings }));
+
+  if (ai) {
+    if (ai.status === "ran") {
+      console.log(`AI reasoning pass: ran (${ai.model}) - ${ai.count} extra finding(s), ${ai.triaged} pattern false-positive(s) corrected`);
+    } else if (ai.status === "error") {
+      console.log(`AI reasoning pass: did not complete (${ai.error}). Report is pattern-checks only.`);
+    } else {
+      console.log("AI reasoning pass: OFF (pattern-only scan). Set a provider key to enable it - see .env.example / README.");
+    }
+  }
+
   console.log(`Full plain-English report: ${outFile}`);
   if (wantJson) console.log(JSON.stringify(findings, null, 2));
 

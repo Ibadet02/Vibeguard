@@ -4,6 +4,12 @@ node_modules/
 # netlify CLI local state
 .netlify/
 
+# secrets / provider keys (never commit; .env.example is the template)
+.env
+.env.local
+**/.env
+**/.env.local
+
 # local scanner output
 vibeguard-report.md
 report.md

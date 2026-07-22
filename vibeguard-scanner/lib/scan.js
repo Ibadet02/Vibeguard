@@ -67,6 +67,7 @@ export async function runScan(target) {
     // the model is unreachable, we just keep the deterministic findings.
     const ai = await aiReview({
       files,
+      root,
       deterministicFindings: findings,
       log: (m) => console.error(m),
     });
@@ -83,7 +84,7 @@ export async function runScan(target) {
       count: ai.findings.length,
       triaged,
       error: ai.error,
-      model: aiConfig().model,
+      model: ai.servedModel || aiConfig().model,
     };
 
     const markdown = renderReport({
