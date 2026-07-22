@@ -16,7 +16,7 @@ import {
   checkSecurityHeaders,
   checkCors,
 } from "./checks.js";
-import { aiReview } from "./ai-review.js";
+import { aiReview, aiConfig, applyTriage } from "./ai-review.js";
 import { renderReport } from "./report.js";
 
 const exec = promisify(execFile);
@@ -70,15 +70,30 @@ export async function runScan(target) {
       deterministicFindings: findings,
       log: (m) => console.error(m),
     });
+    // Let the model correct the pattern checks' false positives / wrong
+    // severities (in place), then add the logic bugs it found on top.
+    const triaged = applyTriage(findings, ai.triage);
     findings.push(...ai.findings);
+
+    // Surface whether the reasoning pass actually ran, so a silent skip (no key,
+    // or a blocked/failed call) is visible in the report instead of looking like
+    // a suspiciously fast "clean-ish" scan.
+    const aiStatus = {
+      status: ai.skipped ? "skipped" : ai.error ? "error" : "ran",
+      count: ai.findings.length,
+      triaged,
+      error: ai.error,
+      model: aiConfig().model,
+    };
 
     const markdown = renderReport({
       target,
       findings,
       checkedAt: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC",
+      ai: aiStatus,
     });
 
-    return { findings, markdown, fileCount: files.length };
+    return { findings, markdown, fileCount: files.length, ai: aiStatus };
   } finally {
     if (cleanup) await cleanup();
   }

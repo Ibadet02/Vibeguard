@@ -36,11 +36,12 @@ async function handleScan(req, res) {
   scanning = true;
   try {
     const t0 = Date.now();
-    const { findings, markdown, fileCount } = await runScan(target);
+    const { findings, markdown, fileCount, ai } = await runScan(target);
     return json(res, 200, {
       findings,
       markdown,
       fileCount,
+      ai,
       seconds: Math.round((Date.now() - t0) / 100) / 10,
     });
   } catch (e) {

@@ -9,7 +9,20 @@ const SEV_LABEL = {
 
 const SEV_EMOJI = { critical: "🔴", high: "🟠", medium: "🟡", info: "🔵" };
 
-export function renderReport({ target, findings, checkedAt }) {
+function aiStatusLine(ai) {
+  if (!ai) return "";
+  if (ai.status === "ran") {
+    const t = ai.triaged ? `, corrected ${ai.triaged} pattern-check false positive${ai.triaged === 1 ? "" : "s"}` : "";
+    return `**AI reasoning pass:** ran (${ai.model}), found ${ai.count} issue${ai.count === 1 ? "" : "s"} the pattern checks missed${t}\n`;
+  }
+  if (ai.status === "error") {
+    return `**AI reasoning pass:** attempted but did not complete, so this report is pattern-checks only. Reason: ${ai.error}\n`;
+  }
+  // skipped
+  return `**AI reasoning pass:** not run, this is a fast pattern-only scan. Set VIBEGUARD_LLM_API_KEY (and VIBEGUARD_LLM_BASE_URL / VIBEGUARD_LLM_MODEL) to enable the deep logic review.\n`;
+}
+
+export function renderReport({ target, findings, checkedAt, ai }) {
   const bySev = Object.fromEntries(SEV_ORDER.map((s) => [s, []]));
   for (const f of findings) bySev[f.severity]?.push(f);
 
@@ -17,7 +30,7 @@ export function renderReport({ target, findings, checkedAt }) {
   const worst = counts[0]?.s;
 
   let md = `# VibeGuard security report\n\n`;
-  md += `**App:** ${target}\n**Scanned:** ${checkedAt}\n\n`;
+  md += `**App:** ${target}\n**Scanned:** ${checkedAt}\n${aiStatusLine(ai)}\n`;
 
   if (findings.length === 0) {
     md += `## Verdict: clean scan\n\nNone of the checks found a problem. That does not guarantee the app is safe (no scanner can), but the most common ways vibe-coded apps get burned are not present.\n`;

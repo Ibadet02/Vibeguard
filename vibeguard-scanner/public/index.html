@@ -31,7 +31,22 @@
     border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer;
   }
   button:disabled { opacity: 0.5; cursor: default; }
-  .spin { display: none; margin-top: 16px; color: var(--muted); }
+  .loader { display: none; margin-top: 18px; }
+  .loader .bar {
+    position: relative; height: 8px; border-radius: 999px;
+    background: var(--panel2); border: 1px solid var(--border); overflow: hidden;
+  }
+  .loader .bar::before {
+    content: ""; position: absolute; top: 0; left: -40%; height: 100%; width: 40%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation: vg-slide 1.3s ease-in-out infinite;
+  }
+  @keyframes vg-slide { 0% { left: -40%; } 100% { left: 100%; } }
+  .loader .status { display: flex; align-items: center; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 13px; }
+  .loader .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: vg-pulse 1s ease-in-out infinite; flex: none; }
+  @keyframes vg-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+  .loader .elapsed { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
   .err { display: none; margin-top: 16px; color: var(--crit); white-space: pre-wrap; }
   .summary { display: none; margin-top: 20px; gap: 10px; }
   .pill { border-radius: 8px; padding: 8px 14px; font-weight: 700; font-size: 14px; background: var(--panel); border: 1px solid var(--border); }
@@ -54,6 +69,9 @@
   .sev { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 999px; margin-right: 8px; vertical-align: 2px; }
   .sev.critical { background: #3d1418; color: var(--crit); } .sev.high { background: #3a2410; color: var(--high); }
   .sev.medium { background: #3a3410; color: var(--med); } .sev.info { background: #12283f; color: var(--info); }
+  .tag { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; padding: 2px 7px; border-radius: 999px; margin-right: 8px; vertical-align: 2px; }
+  .tag.ai { background: #10233a; color: #7dd3fc; border: 1px solid #1e466b; }
+  .tag.tri { background: #2a2140; color: #c4b5fd; border: 1px solid #4a3a76; }
   .toolbar { display: none; margin-top: 18px; gap: 8px; }
   .clean { display: none; margin-top: 20px; background: #12281a; border: 1px solid #1e4d2e; border-radius: 10px; padding: 16px; }
 </style>
@@ -68,7 +86,14 @@
     <button class="primary" id="go">Scan</button>
   </div>
 
-  <div class="spin" id="spin">Scanning... (cloning can take a few seconds)</div>
+  <div class="loader" id="loader">
+    <div class="bar"></div>
+    <div class="status">
+      <span class="dot"></span>
+      <span id="statusMsg">Starting scan…</span>
+      <span class="elapsed" id="elapsed">0.0s</span>
+    </div>
+  </div>
   <div class="err" id="err"></div>
 
   <div class="summary row" id="summary"></div>
@@ -84,6 +109,38 @@
   const $ = (id) => document.getElementById(id);
   let lastMd = "";
 
+  // The scan can take from ~2s (pattern-only) to a few minutes (AI reasoning).
+  // The server responds only when done, so we show an indeterminate bar, a live
+  // elapsed timer, and phase messages keyed off elapsed time to reassure the user.
+  const PHASES = [
+    [0, "Loading files…"],
+    [2, "Running pattern checks…"],
+    [5, "AI reasoning: mapping the app…"],
+    [15, "AI reasoning: reading routes & data access…"],
+    [40, "AI reasoning: checking access control & inputs…"],
+    [80, "AI reasoning: triaging findings…"],
+    [140, "Still working… deep scans can take a few minutes"],
+  ];
+  let loaderTimer = null, loaderT0 = 0;
+  function tickLoader() {
+    const el = (Date.now() - loaderT0) / 1000;
+    $("elapsed").textContent = el.toFixed(1) + "s";
+    let msg = PHASES[0][1];
+    for (const [t, m] of PHASES) if (el >= t) msg = m;
+    $("statusMsg").textContent = msg;
+  }
+  function startLoader() {
+    loaderT0 = Date.now();
+    $("loader").style.display = "block";
+    tickLoader();
+    loaderTimer = setInterval(tickLoader, 100);
+  }
+  function stopLoader() {
+    if (loaderTimer) clearInterval(loaderTimer);
+    loaderTimer = null;
+    $("loader").style.display = "none";
+  }
+
   async function scan() {
     const target = $("target").value.trim();
     if (!target) return;
@@ -92,7 +149,7 @@
     $("toolbar").style.display = "none";
     $("clean").style.display = "none";
     $("findings").innerHTML = "";
-    $("spin").style.display = "block";
+    startLoader();
     $("go").disabled = true;
     try {
       const r = await fetch("/api/scan", {
@@ -108,7 +165,7 @@
       $("err").textContent = e.message;
       $("err").style.display = "block";
     } finally {
-      $("spin").style.display = "none";
+      stopLoader();
       $("go").disabled = false;
     }
   }
@@ -136,8 +193,9 @@
     for (const f of sorted) {
       const card = document.createElement("div");
       card.className = "card " + f.severity;
+      const tag = f.source === "ai" ? `<span class="tag ai">AI</span>` : f.triaged ? `<span class="tag tri">AI-triaged</span>` : "";
       card.innerHTML =
-        `<h3><span class="sev ${f.severity}">${f.severity.toUpperCase()}</span>${esc(f.title)}</h3>` +
+        `<h3><span class="sev ${f.severity}">${f.severity.toUpperCase()}</span>${tag}${esc(f.title)}</h3>` +
         (f.file ? `<div class="where">${esc(f.file)}${f.line ? ":" + f.line : ""}</div>` : "") +
         `<p>${esc(f.detail)}</p>` +
         `<p><span class="fixlabel">Fix:</span> ${esc(f.fix)}</p>`;
