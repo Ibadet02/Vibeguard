@@ -1,0 +1,8 @@
+node_modules
+.git
+.env
+.env.local
+*.log
+vibeguard-report.md
+report.md
+.DS_Store

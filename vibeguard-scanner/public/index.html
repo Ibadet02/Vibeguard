@@ -79,12 +79,13 @@
 <body>
 <div class="wrap">
   <h1><span class="shield">▲</span> VibeGuard Scanner</h1>
-  <div class="sub">Paste a public git URL or a local folder path. Runs on your machine, nothing leaves it. Reports are plain English.</div>
+  <div class="sub">Paste a public GitHub repo URL. We clone it, scan it for the security mistakes AI-built apps commonly ship, and give you a plain-English report with fixes. The clone is deleted right after.</div>
 
   <div class="row">
-    <input id="target" placeholder="https://github.com/someone/their-app  or  /home/me/projects/app" />
+    <input id="target" placeholder="https://github.com/you/your-app" />
     <button class="primary" id="go">Scan</button>
   </div>
+  <div class="sub" style="margin-top:8px">Public repositories only. The deep AI review sends your code to our analysis provider for the duration of the scan. Don't scan secrets you can't rotate.</div>
 
   <div class="loader" id="loader">
     <div class="bar"></div>
@@ -143,6 +144,8 @@
     $("loader").style.display = "none";
   }
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   async function scan() {
     const target = $("target").value.trim();
     if (!target) return;
@@ -154,15 +157,36 @@
     startLoader();
     $("go").disabled = true;
     try {
+      // Start the job.
       const r = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target }),
       });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || "Scan failed");
-      lastMd = data.markdown;
-      render(data);
+      const started = await r.json();
+      if (!r.ok) throw new Error(started.error || "Scan failed");
+      const jobId = started.jobId;
+
+      // Poll until done. The scan runs server-side and can take minutes, so we
+      // don't hold a single request open (hosting proxies would time it out).
+      while (true) {
+        await sleep(2500);
+        let data;
+        try {
+          const pr = await fetch("/api/scan/" + jobId);
+          data = await pr.json();
+          if (!pr.ok) throw new Error(data.error || "Scan failed");
+        } catch (netErr) {
+          // Transient network blip while polling: keep waiting.
+          continue;
+        }
+        if (data.status === "running") continue;
+        if (data.status === "error") throw new Error(data.error || "Scan failed");
+        // done
+        lastMd = data.markdown;
+        render(data);
+        break;
+      }
     } catch (e) {
       $("err").textContent = e.message;
       $("err").style.display = "block";

@@ -54,6 +54,38 @@ Without a key the scanner runs pattern-only and says so in the report. The AI pa
 - Missing security headers (CSP / X-Frame-Options / HSTS)
 - CORS wildcard
 
+## Deploy the hosted scanner
+
+The hosted web app (`server.js`) needs Node 22, `git`, and the Claude Code CLI. The included `Dockerfile` bundles all three and runs as a non-root user (Claude Code refuses `--dangerously-skip-permissions` under root).
+
+```bash
+docker build -t vibeguard .
+docker run -p 3488:3488 \
+  -e VIBEGUARD_LLM_BASE_URL="https://cc-t2.freemodel.dev" \
+  -e VIBEGUARD_LLM_API_KEY="<your key>" \
+  vibeguard
+```
+
+On Railway / Render / Fly: point them at this repo, they auto-detect the `Dockerfile`, then set the two `VIBEGUARD_LLM_*` env vars in the dashboard (never bake secrets into the image). `VIBEGUARD_PUBLIC=1` is already set in the image, which:
+
+- rejects local-filesystem paths (only git URLs),
+- restricts clones to `VIBEGUARD_ALLOWED_HOSTS` (default github/gitlab/bitbucket),
+- rate-limits to `VIBEGUARD_RATE_MAX` scans/IP/hour (default 5),
+- caps repo size (`VIBEGUARD_MAX_FILES`, `VIBEGUARD_MAX_TOTAL_BYTES`),
+- runs one scan at a time (matches the single-account AI backend).
+
+Health check: `GET /healthz`.
+
+### Switching the AI backend (freemodel -> real provider)
+
+The AI backend is swappable via env vars — no code change:
+
+- **freemodel (default MVP):** `VIBEGUARD_LLM_BASE_URL=https://cc-t2.freemodel.dev` + freemodel key. Auto-routes through the Claude Code CLI.
+- **OpenAI:** `VIBEGUARD_LLM_API=openai` + `VIBEGUARD_LLM_API_KEY=sk-...`. Uses the fast direct-API backend.
+- **Anthropic:** `VIBEGUARD_LLM_API=anthropic` + `VIBEGUARD_LLM_API_KEY=sk-ant-...`.
+
+Migrate the moment you have steady traffic or paying users — freemodel is a single personal account and will throttle/ban under multi-user load.
+
 ## Concierge workflow (validation stage)
 
 1. Someone drops a repo link in the free-scan thread.
