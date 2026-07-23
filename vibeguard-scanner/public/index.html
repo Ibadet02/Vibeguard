@@ -68,6 +68,11 @@
   }
   .btn:hover { background: var(--cyan-2); transform: translateY(-1px); box-shadow: 0 10px 34px rgba(47,228,199,0.3); }
   .btn:disabled { opacity: 0.5; cursor: default; transform: none; box-shadow: none; }
+  .emailrow { max-width: 620px; margin: 10px auto 0; }
+  .emailrow input { width: 100%; font-family: var(--mono); font-size: 0.92rem; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 13px 16px; transition: border-color .2s, box-shadow .2s; }
+  .emailrow input::placeholder { color: var(--faint); }
+  .emailrow input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(47,228,199,0.16); }
+  .emailnote { display: none; max-width: 620px; margin: 14px auto 0; text-align: center; color: var(--cyan-2); font-family: var(--mono); font-size: 12px; }
   .hint { text-align: center; color: var(--faint); font-family: var(--mono); font-size: 11.5px; margin: 14px auto 0; max-width: 60ch; letter-spacing: 0.02em; }
 
   @keyframes ctaGlow {
@@ -152,7 +157,11 @@
     <input id="target" placeholder="https://github.com/you/your-app" aria-label="Repository URL" />
     <button class="btn" id="go">Scan</button>
   </div>
+  <div class="emailrow" id="emailrow" hidden>
+    <input id="email" type="email" placeholder="you@email.com — email me the report (optional)" aria-label="Email (optional)" />
+  </div>
   <p class="hint">Public repositories only. The deep AI review sends your code to our analysis provider for the duration of the scan. Don't scan secrets you can't rotate.</p>
+  <div class="emailnote" id="emailnote"></div>
 
   <div class="loader" id="loader">
     <div class="pbar"><div class="pfill" id="pfill"></div></div>
@@ -181,6 +190,12 @@
 <script>
   const $ = (id) => document.getElementById(id);
   let lastMd = "";
+  let lastEmail = "";
+
+  // Reveal the optional email field only if the server has delivery configured.
+  fetch("/api/config").then((r) => r.json()).then((c) => {
+    if (c && c.emailEnabled) $("emailrow").hidden = false;
+  }).catch(() => {});
 
   // Phase text keyed off elapsed seconds. The scan has no true progress signal
   // (pattern checks, then a variable 2–7 min AI pass), so the percentage is a
@@ -235,19 +250,26 @@
   async function scan() {
     const target = $("target").value.trim();
     if (!target) return;
+    const email = (!$("emailrow").hidden && $("email")) ? $("email").value.trim() : "";
+    lastEmail = email;
     $("err").style.display = "none";
     $("summary").style.display = "none";
     $("toolbar").style.display = "none";
     $("clean").style.display = "none";
+    $("emailnote").style.display = "none";
     $("findings").innerHTML = "";
     startLoader();
+    if (email) {
+      $("emailnote").textContent = "You can close this tab — we'll email the report to " + email + " when it's done.";
+      $("emailnote").style.display = "block";
+    }
     $("go").disabled = true;
     try {
       // Start the job.
       const r = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target }),
+        body: JSON.stringify({ target, email }),
       });
       const started = await r.json();
       if (!r.ok) throw new Error(started.error || "Scan failed");
@@ -278,6 +300,7 @@
     } catch (e) {
       $("err").textContent = e.message;
       $("err").style.display = "block";
+      $("emailnote").style.display = "none";
     } finally {
       stopLoader();
       $("go").disabled = false;
@@ -285,6 +308,16 @@
   }
 
   function render(data) {
+    // Delivery confirmation (send happens server-side; may still be in flight).
+    if (lastEmail && data.emailed) {
+      $("emailnote").textContent = data.emailed === "failed"
+        ? "We couldn't email the report, but it's right here below."
+        : "Report emailed to " + lastEmail + " (check spam if it's not in your inbox).";
+      $("emailnote").style.display = "block";
+    } else {
+      $("emailnote").style.display = "none";
+    }
+
     const counts = { critical: 0, high: 0, medium: 0, info: 0 };
     for (const f of data.findings) counts[f.severity]++;
 

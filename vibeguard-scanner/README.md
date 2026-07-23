@@ -82,6 +82,10 @@ The hosted app serves [PRIVACY.md](PRIVACY.md) at `/privacy` and [TERMS.md](TERM
 
 These are plain-English drafts, not lawyer-reviewed. **Get them reviewed by a professional before charging money.**
 
+### Optional: email the report
+
+Set `VIBEGUARD_EMAIL_API_KEY` (a Resend key) and `VIBEGUARD_EMAIL_FROM` (a sender on a domain you've verified in Resend) and the scanner shows an optional email field. When a scan finishes it emails the report server-side, so the user gets it even if they closed the tab. It's zero-dependency (a `fetch` to Resend), fully non-fatal (a failed send never affects the scan), and disabled unless both env vars are present (the UI hides the field via `GET /api/config`). Set `VIBEGUARD_EMAIL_BCC` to blind-copy yourself on every report — a simple lead list. Note: to email arbitrary users you need a verified sending domain; with Resend's shared `onboarding@resend.dev` sender you can only email your own account address (fine for testing).
+
 ### Switching the AI backend (freemodel -> real provider)
 
 The AI backend is swappable via env vars — no code change:

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { runScan, isGitUrl } from "./lib/scan.js";
+import { emailConfig, sendReportEmail, isValidEmail } from "./lib/email.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3488;
@@ -134,6 +135,14 @@ async function startScan(req, res) {
   const err = await validateTarget(target);
   if (err) return json(res, 400, { error: err });
 
+  // Optional: email the report when the scan finishes. Only honored if the
+  // server has email configured; a bad address is rejected up front.
+  const email = String(payload.email || "").trim();
+  if (email) {
+    if (!emailConfig().enabled) return json(res, 400, { error: "Email delivery isn't enabled on this server." });
+    if (!isValidEmail(email)) return json(res, 400, { error: "That email address doesn't look right." });
+  }
+
   const ip = clientIp(req);
   if (PUBLIC && rateLimited(ip)) {
     return json(res, 429, { error: `Rate limit reached (${RATE_MAX} scans/hour). Try again later.` });
@@ -152,12 +161,30 @@ async function startScan(req, res) {
     try {
       const { findings, markdown, fileCount, ai } = await runScan(target);
       const finishedAt = Date.now();
+      const seconds = Math.round((finishedAt - startedAt) / 100) / 10;
       jobs.set(jobId, {
         status: "done",
         startedAt,
         finishedAt,
-        result: { findings, markdown, fileCount, ai, seconds: Math.round((finishedAt - startedAt) / 100) / 10 },
+        emailed: email ? "pending" : null,
+        result: { findings, markdown, fileCount, ai, seconds, emailed: email ? "pending" : null },
       });
+
+      // Fire-and-forget the report email. Runs server-side after the scan, so it
+      // still sends even if the user closed the tab. Never affects the result.
+      if (email && emailConfig().enabled) {
+        sendReportEmail({ to: email, target, findings, markdown, ai, seconds, fileCount })
+          .then(() => {
+            const j = jobs.get(jobId);
+            if (j?.result) j.result.emailed = "sent";
+            console.error(`[email] report sent to ${email} for ${target}`);
+          })
+          .catch((e) => {
+            const j = jobs.get(jobId);
+            if (j?.result) j.result.emailed = "failed";
+            console.error(`[email] send failed for ${email}: ${e.message}`);
+          });
+      }
     } catch (e) {
       jobs.set(jobId, {
         status: "error",
@@ -272,6 +299,8 @@ const server = createServer(async (req, res) => {
   if (req.method === "GET" && jobMatch) return getJob(res, jobMatch[1]);
 
   if (req.method === "GET" && pathname === "/healthz") return json(res, 200, { ok: true });
+
+  if (req.method === "GET" && pathname === "/api/config") return json(res, 200, { emailEnabled: emailConfig().enabled });
 
   if (req.method === "GET" && pathname === "/privacy") return serveMarkdownPage(res, "PRIVACY.md", "Privacy notice");
   if (req.method === "GET" && pathname === "/terms") return serveMarkdownPage(res, "TERMS.md", "Terms of use");

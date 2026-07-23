@@ -33,5 +33,10 @@ EXPOSE 3488
 #   VIBEGUARD_MAX_FILES=4000         repo file cap
 #   VIBEGUARD_MAX_TOTAL_BYTES=40000000
 #   VIBEGUARD_ALLOWED_HOSTS=github.com,gitlab.com,bitbucket.org
+#   VIBEGUARD_PROXY_HOPS=1           trusted reverse-proxy hops for client-IP rate limiting
+# Optional "email me the report" (Resend); feature stays off unless both are set:
+#   VIBEGUARD_EMAIL_API_KEY=re_...
+#   VIBEGUARD_EMAIL_FROM=VibeGuard <reports@yourdomain.com>
+#   VIBEGUARD_EMAIL_BCC=you@yourdomain.com   (optional lead-capture copy)
 
 CMD ["node", "server.js"]

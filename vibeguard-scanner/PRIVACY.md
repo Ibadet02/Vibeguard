@@ -8,6 +8,7 @@ VibeGuard is a security scanner for public code repositories. This page explains
 
 - **The repository URL you submit.** We use it to clone the repo and run the scan. It may appear in server logs.
 - **Your IP address.** Held in memory only, used for rate limiting. Not written to a database.
+- **Your email address, only if you choose to enter it** to have the report emailed to you (see "If you give us your email" below).
 - **Scan results.** Kept in server memory for about 15 minutes so your browser can fetch them, then discarded. We do not keep a history of reports.
 
 We do not use accounts, cookies, or analytics trackers. We do not sell or share any of the above.
@@ -27,6 +28,16 @@ The deep review is powered by a third-party AI provider. During the scan, portio
 - **Only scan public repositories, and never scan code containing secrets you cannot rotate.** If the scanner finds a live credential, treat it as exposed and rotate it.
 
 The pattern-check layer runs entirely on our server and sends nothing to the AI provider.
+
+## If you give us your email (optional)
+
+Emailing yourself the report is optional. If you enter an email address:
+
+- We use it to send you that scan's report, and it's passed to our email provider (Resend) to deliver the message. That's the only reason it leaves our server.
+- Because we're early, we might email you once or twice to ask how the scan went or to tell you about VibeGuard. No spam, and you can reply "stop" any time and we'll remove you.
+- We don't sell your email or share it beyond the email provider needed to deliver the message.
+
+Leave the field blank and no email is collected at all.
 
 ## Your rights
 
