@@ -249,6 +249,13 @@
   $("go").onclick = scan;
   $("target").addEventListener("keydown", (e) => { if (e.key === "Enter") scan(); });
 
+  // Deep link from the landing page: /?target=<repo> prefills and auto-starts.
+  const deepTarget = new URLSearchParams(location.search).get("target");
+  if (deepTarget) {
+    $("target").value = deepTarget.trim();
+    scan();
+  }
+
   $("copyMd").onclick = () => {
     navigator.clipboard.writeText(lastMd);
     $("copyMd").textContent = "Copied";

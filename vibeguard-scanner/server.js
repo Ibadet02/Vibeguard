@@ -28,9 +28,22 @@ let scanning = false; // one scan at a time (matches the single-account AI backe
 const ipHits = new Map(); // ip -> timestamp[]
 const jobs = new Map(); // jobId -> { status, startedAt, finishedAt?, result?, error?, code? }
 
+// Identify the client for rate limiting. X-Forwarded-For is a comma-separated
+// chain "client, proxy1, proxy2"; a client can PREPEND fake entries, so the
+// leftmost value is attacker-controlled and must never be trusted. Behind a
+// trusted reverse proxy (Railway) the real client IP is the entry the proxy
+// itself appended: count VIBEGUARD_PROXY_HOPS back from the end (1 = one proxy).
+// Locally (no PUBLIC / no proxy) we use the raw socket address instead.
 function clientIp(req) {
-  const xf = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return xf || req.socket.remoteAddress || "unknown";
+  const chain = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (PUBLIC && chain.length) {
+    const hops = Math.max(1, Number(process.env.VIBEGUARD_PROXY_HOPS) || 1);
+    return chain[chain.length - hops] || req.socket.remoteAddress || "unknown";
+  }
+  return req.socket.remoteAddress || "unknown";
 }
 
 function rateLimited(ip) {
