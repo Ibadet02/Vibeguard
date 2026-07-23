@@ -33,7 +33,7 @@ export function renderReport({ target, findings, checkedAt, ai }) {
   md += `**App:** ${target}\n**Scanned:** ${checkedAt}\n${aiStatusLine(ai)}\n`;
 
   if (findings.length === 0) {
-    md += `## Verdict: clean scan\n\nNone of the checks found a problem. That does not guarantee the app is safe (no scanner can), but the most common ways vibe-coded apps get burned are not present.\n`;
+    md += `## Verdict: clean scan\n\nNone of the checks found a problem. That does not guarantee the app is safe (no scanner can), but the most common ways vibe-coded apps get burned are not present.\n\n---\n\n*This report is informational, not a security audit. No scanner catches everything. Provided as is, use at your own risk.*\n`;
     return md;
   }
 
@@ -60,7 +60,8 @@ export function renderReport({ target, findings, checkedAt, ai }) {
     }
   }
 
-  md += `---\n\n*Scanned by [VibeGuard](https://vibeguard-6809.netlify.app), a security scanner for AI-built apps. Checks: hardcoded keys and tokens, hardcoded fallback secrets, secrets in frontend bundles, committed .env files, Supabase Row Level Security, unauthenticated API routes, identity trusted from request headers, IDOR patterns, dependency CVEs, security headers, CORS.*\n`;
+  md += `---\n\n*Scanned by [VibeGuard](https://vibeguard-6809.netlify.app), a security scanner for AI-built apps. Checks: hardcoded keys and tokens, hardcoded fallback secrets, secrets in frontend bundles, committed .env files, Supabase Row Level Security, unauthenticated API routes, identity trusted from request headers, IDOR patterns, dependency CVEs, security headers, CORS.*\n\n`;
+  md += `*This report is informational, not a security audit. No scanner catches everything, and individual findings can be wrong, so verify before acting on them. Provided as is, use at your own risk.*\n`;
   return md;
 }
 

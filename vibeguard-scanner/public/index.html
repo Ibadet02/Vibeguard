@@ -74,6 +74,9 @@
   .tag.tri { background: #2a2140; color: #c4b5fd; border: 1px solid #4a3a76; }
   .toolbar { display: none; margin-top: 18px; gap: 8px; }
   .clean { display: none; margin-top: 20px; background: #12281a; border: 1px solid #1e4d2e; border-radius: 10px; padding: 16px; }
+  .foot { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  .foot a { color: var(--muted); text-decoration: underline; }
+  .foot a:hover { color: var(--text); }
 </style>
 </head>
 <body>
@@ -104,6 +107,11 @@
     <button class="ghost" id="dlMd">Download report.md</button>
   </div>
   <div class="findings" id="findings"></div>
+
+  <div class="foot">
+    No scanner catches everything, and findings can be wrong. Reports are informational, not a security audit. Use at your own risk.
+    By scanning you agree to the <a href="/terms">terms</a>. See the <a href="/privacy">privacy notice</a> for what happens to your code (clones are deleted after each scan; the AI review sends code to our provider).
+  </div>
 </div>
 
 <script>

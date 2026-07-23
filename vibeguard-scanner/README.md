@@ -76,6 +76,12 @@ On Railway / Render / Fly: point them at this repo, they auto-detect the `Docker
 
 Health check: `GET /healthz`.
 
+### Privacy and terms
+
+The hosted app serves [PRIVACY.md](PRIVACY.md) at `/privacy` and [TERMS.md](TERMS.md) at `/terms` (rendered to HTML by `server.js`), and links both from the scanner page footer. They cover the essentials: clones are ephemeral and deleted after each scan, the AI review sends code to the configured provider, no training on user code, and a no-warranty / use-at-your-own-risk disclaimer. Every report also carries a short "informational, not an audit" footer.
+
+These are plain-English drafts, not lawyer-reviewed. **Get them reviewed by a professional before charging money.**
+
 ### Switching the AI backend (freemodel -> real provider)
 
 The AI backend is swappable via env vars — no code change:

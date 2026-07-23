@@ -176,6 +176,66 @@ function getJob(res, jobId) {
   return json(res, 200, { status: "done", ...job.result });
 }
 
+// Minimal markdown -> HTML for our own TERMS.md / PRIVACY.md (headings, bold,
+// links, lists, paragraphs — nothing else is used in those files). Content is
+// authored by us, not user input, but we escape anyway.
+function mdToHtml(md) {
+  const escapeHtml = (s) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const inline = (s) =>
+    escapeHtml(s)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, `<a href="$2">$1</a>`);
+
+  const out = [];
+  let inList = false;
+  for (const line of md.split("\n")) {
+    const h = line.match(/^(#{1,3}) (.*)$/);
+    const li = line.match(/^- (.*)$/);
+    if (inList && !li) {
+      out.push("</ul>");
+      inList = false;
+    }
+    if (h) out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`);
+    else if (li) {
+      if (!inList) {
+        out.push("<ul>");
+        inList = true;
+      }
+      out.push(`<li>${inline(li[1])}</li>`);
+    } else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+  }
+  if (inList) out.push("</ul>");
+  return out.join("\n");
+}
+
+async function serveMarkdownPage(res, file, title) {
+  let md;
+  try {
+    md = await readFile(path.join(here, file), "utf8");
+  } catch {
+    res.writeHead(404, { "Content-Type": "text/plain", ...securityHeaders() });
+    return res.end("Not found");
+  }
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${title} — VibeGuard</title>
+<style>
+  body { margin: 0; background: #12141a; color: #e8eaf0; font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 32px 16px 60px; }
+  h1 { font-size: 22px; } h2 { font-size: 17px; margin-top: 28px; }
+  a { color: #4ade80; }
+  p, li { color: #c7ccdb; }
+  strong { color: #e8eaf0; }
+  .back { font-size: 13px; }
+</style></head><body><div class="wrap">
+<p class="back"><a href="/">&larr; VibeGuard Scanner</a></p>
+${mdToHtml(md)}
+</div></body></html>`;
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...securityHeaders() });
+  res.end(html);
+}
+
 function securityHeaders() {
   return {
     "X-Content-Type-Options": "nosniff",
@@ -199,6 +259,9 @@ const server = createServer(async (req, res) => {
   if (req.method === "GET" && jobMatch) return getJob(res, jobMatch[1]);
 
   if (req.method === "GET" && pathname === "/healthz") return json(res, 200, { ok: true });
+
+  if (req.method === "GET" && pathname === "/privacy") return serveMarkdownPage(res, "PRIVACY.md", "Privacy notice");
+  if (req.method === "GET" && pathname === "/terms") return serveMarkdownPage(res, "TERMS.md", "Terms of use");
 
   if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
     try {
