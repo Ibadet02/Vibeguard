@@ -1,6 +1,12 @@
 # VibeGuard hosted scanner.
-# Node 22 (for native .env loading) + git (to clone repos) + the Claude Code CLI
-# (which powers the AI reasoning pass via the freemodel backend for now).
+# Node 22 (for native .env loading) + git (to clone repos). The AI reasoning pass
+# talks to the provider over plain HTTPS, so there is nothing else to install.
+#
+# The optional claude-cli backend (VIBEGUARD_LLM_API=claude-cli) needs the Claude
+# Code binary, which is deliberately NOT in this image: it would run
+# --dangerously-skip-permissions against freshly cloned untrusted repos. If you
+# want that backend, add `RUN npm install -g @anthropic-ai/claude-code` below and
+# understand what you are turning on.
 
 FROM node:22-slim
 
@@ -8,10 +14,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# The AI reasoning pass shells out to the real Claude Code binary.
-RUN npm install -g @anthropic-ai/claude-code
-
-# Run as non-root: Claude Code refuses --dangerously-skip-permissions under root.
+# Run as non-root.
 RUN useradd --create-home --uid 10001 app
 ENV HOME=/home/app
 
@@ -26,9 +29,15 @@ ENV PORT=3488
 EXPOSE 3488
 
 # Provide these at RUNTIME in the host dashboard (never bake secrets into the image):
-#   VIBEGUARD_LLM_BASE_URL=https://cc-t2.freemodel.dev
-#   VIBEGUARD_LLM_API_KEY=<your freemodel key>
+#   VIBEGUARD_LLM_API=anthropic       or "openai"
+#   VIBEGUARD_LLM_API_KEY=<provider key>
+#   VIBEGUARD_LLM_MODEL=claude-opus-5
+# Cost control (see lib/cost.js):
+#   VIBEGUARD_LLM_MAX_USD=0.50        hard spend ceiling per scan, 0 disables
+#   VIBEGUARD_LLM_PRICE_IN / _OUT     $/M tokens, for models we don't price by default
 # Optional tuning:
+#   VIBEGUARD_CONCURRENCY=2           scans running at once
+#   VIBEGUARD_MAX_QUEUE=20            scans allowed to wait
 #   VIBEGUARD_RATE_MAX=5              scans per IP per hour
 #   VIBEGUARD_MAX_FILES=4000         repo file cap
 #   VIBEGUARD_MAX_TOTAL_BYTES=40000000

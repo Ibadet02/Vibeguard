@@ -1,6 +1,6 @@
 # Privacy notice
 
-Last updated: 2026-07-23
+Last updated: 2026-07-25
 
 VibeGuard is a security scanner for public code repositories. This page explains what happens to your data when you run a scan. Plain English, no tricks.
 
@@ -28,6 +28,20 @@ The deep review is powered by a third-party AI provider. During the scan, portio
 - **Only scan public repositories, and never scan code containing secrets you cannot rotate.** If the scanner finds a live credential, treat it as exposed and rotate it.
 
 The pattern-check layer runs entirely on our server and sends nothing to the AI provider.
+
+## The live database check (optional, off by default)
+
+You can ask VibeGuard to check your live Supabase project for tables that anyone on the internet can read. This is **switched off unless you turn it on**, and turning it on requires confirming that you own the app or have permission to test it. We record that confirmation, with your IP and the time, because this feature sends requests to a real database and we need a record of who authorised it.
+
+If you turn it on:
+
+- We use only your **anon (public) key** — the one that already ships inside your app's JavaScript, visible to anyone who opens your site. You may paste it, or we take it from your repo. **Never give us a service_role or secret key**, and we refuse them if you try.
+- **We only read, and we never read your data.** To show a table is exposed we ask the database for its row *count*, which comes back in a response header with no rows attached. Column *names* come from the API's own public description. At no point do we fetch, see, log, or store the contents of any row. No customer of yours has their personal data pass through VibeGuard.
+- **We never write.** No inserts, updates or deletes, not even to test whether they would be allowed. The report tells you writes were not tested.
+- We hold the key in memory for the scan and discard it. It is never written to disk and never appears in a report.
+- Only hosted `*.supabase.co` projects can be checked.
+
+Because these requests come from our servers, they may appear in your Supabase logs as traffic from an unfamiliar IP. That's us, at your request.
 
 ## If you give us your email (optional)
 
