@@ -136,6 +136,81 @@ export function checkFallbackSecrets(files) {
 
 /* ---------------- .env hygiene ---------------- */
 
+// Committing a .env is only a leak if the file actually held a secret.
+//
+// Calibration note: on 48 real Lovable repos, 13 had a committed .env and NONE
+// of them leaked anything. Every value was public-by-design config — Supabase
+// project URLs and publishable keys, Firebase web config, an EmailJS *public*
+// key. Reporting those as "critical, rotate every secret" is the kind of false
+// alarm that makes a developer dismiss the whole report, so the severity now
+// follows what is actually in the file.
+
+// Anything with a public build-time prefix is compiled into the browser bundle
+// regardless, so committing it leaks nothing new. (A public-prefixed var that
+// holds a real secret is a separate, worse finding, raised further down.)
+const PUBLIC_ENV_PREFIX = /^(VITE|NEXT_PUBLIC|REACT_APP|EXPO_PUBLIC|NUXT_PUBLIC|PUBLIC|GATSBY)_/;
+
+// Unprefixed names that are still public by design. Firebase's whole web config
+// is meant to be shipped to browsers, and EmailJS calls its key "public".
+const PUBLIC_ENV_NAME =
+  /^(SUPABASE_(URL|ANON_KEY|PUBLISHABLE_KEY|PROJECT_ID|PROJECT_REF)|FIREBASE_[A-Z0-9_]+|EMAILJS_(SERVICE_ID|TEMPLATE_ID|PUBLIC_KEY)|NODE_ENV|PORT|HOST|BASE_URL|APP_URL|APP_NAME|APP_ENV|NEXT_TELEMETRY_DISABLED)$/;
+
+const SECRET_ENV_NAME = /(SECRET|PRIVATE|PASSWORD|PASSWD|SERVICE_ROLE|CREDENTIAL|_PAT$)/;
+
+// Firebase's browser config is meant to be public: the "API key" is a project
+// identifier, not a credential, and Firebase secures data with Security Rules
+// instead. It happens to match Google's AIza... key pattern, so without this
+// carve-out every correctly-built Firebase app gets a false critical.
+const FIREBASE_PUBLIC_CONFIG =
+  /FIREBASE_(API_KEY|AUTH_DOMAIN|PROJECT_ID|STORAGE_BUCKET|MESSAGING_SENDER_ID|APP_ID|MEASUREMENT_ID|DATABASE_URL)$/;
+
+// Google keys that are supposed to sit in the browser. A Maps JS key is
+// restricted by HTTP referrer, not by secrecy, so "leaking" one is a non-event
+// and flagging it costs you the reader's trust on everything else.
+const BROWSER_PUBLIC_KEY = /(BROWSER_KEY|CLIENT_KEY|_PUBLIC_KEY|PUBLISHABLE_KEY|MAPS_API_KEY|MAPS_KEY)$/;
+
+// A key named ...SERVER_KEY or ...ADMIN_KEY is not public no matter what slot
+// it sits in, so these words veto the carve-out entirely.
+const SERVER_SIDE_HINT = /(SERVER|SECRET|PRIVATE|BACKEND|ADMIN)/;
+
+function isPublicByDesignValue(name, value) {
+  // Deliberately tolerant on length: the point is "this is a Google-issued key
+  // sitting in a slot that is meant to be public", and pinning the exact
+  // 39-char format would silently stop matching if Google reformats it.
+  const googleKey = /^AIza[0-9A-Za-z_-]{20,}$/.test(value.trim());
+  if (!googleKey || SERVER_SIDE_HINT.test(name)) return false;
+  return FIREBASE_PUBLIC_CONFIG.test(name) || BROWSER_PUBLIC_KEY.test(name);
+}
+
+function classifyEnvVar(name, value) {
+  // An empty or placeholder value can't leak anything.
+  if (!value || PLACEHOLDER.test(value)) return "public";
+  // Firebase web config first: it looks like a Google key but is meant to ship.
+  if (isPublicByDesignValue(name, value)) return "public";
+  // A recognisable live credential is a secret whatever it's called.
+  if (KEY_PATTERNS.some((p) => { p.re.lastIndex = 0; return p.re.test(value); })) return "secret";
+  if (decodeJwtPayload(value)?.role === "service_role") return "secret";
+  if (SECRET_ENV_NAME.test(name)) return "secret";
+  if (PUBLIC_ENV_PREFIX.test(name) || PUBLIC_ENV_NAME.test(name)) return "public";
+  return "unknown";
+}
+
+// -> { secret: [names], unknown: [names], public: [names] }
+function classifyEnvFile(f) {
+  const out = { secret: [], unknown: [], public: [] };
+  for (const line of f.lines) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    const name = m[1];
+    const value = m[2].trim().replace(/^["']|["']$/g, "");
+    out[classifyEnvVar(name, value)].push(name);
+  }
+  return out;
+}
+
+const nameList = (names, limit = 6) =>
+  names.slice(0, limit).join(", ") + (names.length > limit ? `, +${names.length - limit} more` : "");
+
 export async function checkEnvFiles(files, root) {
   const findings = [];
   const envFiles = files.filter(
@@ -156,33 +231,70 @@ export async function checkEnvFiles(files, root) {
   for (const f of envFiles) {
     const inGit = tracked.has(f.rel);
     const ignored = await isEnvIgnored(root, f.rel, gitignore);
+    const kind = classifyEnvFile(f);
+    const exposed = kind.secret.length > 0;
+    const uncertain = !exposed && kind.unknown.length > 0;
+
     if (inGit) {
-      findings.push({
-        severity: "critical",
-        title: `${f.rel} is committed to git`,
-        file: f.rel,
-        line: 1,
-        detail:
-          "Your environment file (database passwords, API keys) is checked into the repository. If this repo is or ever becomes public, every secret in it is public too. Git also keeps it in history forever, deleting the file later is not enough.",
-        fix: "1) Rotate every secret in this file. 2) `git rm --cached " + f.rel + "` and commit. 3) Add `.env*` to .gitignore. 4) If the repo was ever public, treat every value as leaked.",
-      });
+      if (exposed) {
+        findings.push({
+          severity: "critical",
+          title: `${f.rel} is committed to git, with secrets in it`,
+          file: f.rel,
+          line: 1,
+          detail:
+            `Your environment file is checked into the repository and it holds values that look like real credentials: ${nameList(kind.secret)}. ` +
+            "If this repo is or ever becomes public, those are public too. Git keeps the file in history forever, so deleting it later is not enough.",
+          fix:
+            `1) Rotate ${kind.secret.length === 1 ? "that credential" : "those credentials"} now. 2) \`git rm --cached ${f.rel}\` and commit. ` +
+            "3) Add `.env*` to .gitignore. 4) If the repo was ever public, treat every value in the file as leaked.",
+        });
+      } else if (uncertain) {
+        findings.push({
+          severity: "medium",
+          title: `${f.rel} is committed to git`,
+          file: f.rel,
+          line: 1,
+          detail:
+            `Your environment file is checked into the repository. Most of what's in it is public-by-design config, but we can't tell what these are: ${nameList(kind.unknown)}. ` +
+            "If any of them is a real credential, it's public and it's in git history forever.",
+          fix:
+            `Open ${f.rel} and check those values. If any is a real secret, rotate it, then \`git rm --cached ${f.rel}\`, commit, and add \`.env*\` to .gitignore. If they're all public config, you can leave this.`,
+        });
+      } else {
+        findings.push({
+          severity: "info",
+          title: `${f.rel} is committed to git, but nothing secret is in it`,
+          file: f.rel,
+          line: 1,
+          detail:
+            `Your environment file is checked into the repository, which usually means leaked secrets. Not here: every value in it is public by design (${nameList(kind.public)}) and already ships inside your app's JavaScript, so committing it gave nothing away. ` +
+            "Worth knowing because the moment you add a real key to this file, it goes straight to a public repo.",
+          fix: `Add \`.env*\` to .gitignore and run \`git rm --cached ${f.rel}\` so the next secret you add doesn't get committed. Nothing to rotate today.`,
+        });
+      }
     } else if (!gitignore) {
       findings.push({
-        severity: "high",
+        severity: exposed ? "high" : "info",
         title: "No .gitignore, your .env is one `git push` from leaking",
         file: f.rel,
         line: 1,
         detail:
-          "There is a .env file with secrets but no .gitignore. The first time you (or your AI tool) run `git add .` and push, the secrets go with it.",
+          `There is a ${f.rel} file but no .gitignore. The first time you (or your AI tool) run \`git add .\` and push, it goes with it. ` +
+          (exposed
+            ? `That file holds what look like real credentials: ${nameList(kind.secret)}.`
+            : "Right now the file only holds public config, so there's nothing urgent to lose, but that changes the moment you add a real key."),
         fix: "Create a .gitignore that includes `.env*` and `node_modules/` before your next commit.",
       });
     } else if (!ignored) {
       findings.push({
-        severity: "high",
+        severity: exposed ? "high" : "info",
         title: ".gitignore does not cover .env files",
         file: ".gitignore",
         line: 1,
-        detail: `You have ${f.rel} but .gitignore never mentions .env, so a plain \`git add .\` will stage it.`,
+        detail:
+          `You have ${f.rel} but .gitignore never mentions .env, so a plain \`git add .\` will stage it. ` +
+          (exposed ? `The file holds what look like real credentials: ${nameList(kind.secret)}.` : "It currently holds only public config."),
         fix: "Add a line `.env*` to .gitignore.",
       });
     }
@@ -193,10 +305,14 @@ export async function checkEnvFiles(files, root) {
       if (!m) continue;
       const [, name, valueRaw] = m;
       const value = valueRaw.trim().replace(/^["']|["']$/g, "");
+      // Name patterns must be specific. Bare /SERVICE/ matched EMAILJS_SERVICE_ID
+      // and bare /TOKEN/ matched PAYMENTS_CLIENT_TOKEN, both of which are public
+      // identifiers by design. Match the words that actually mean "secret".
       const looksSecret =
-        /SECRET|SERVICE|PRIVATE|PASSWORD|TOKEN/i.test(name) ||
-        KEY_PATTERNS.some((p) => { p.re.lastIndex = 0; return p.re.test(value); }) ||
-        (decodeJwtPayload(value)?.role === "service_role");
+        !isPublicByDesignValue(name, value) &&
+        (/SECRET|SERVICE_ROLE|SERVICE_KEY|SERVICE_ACCOUNT|PRIVATE|PASSWORD|ACCESS_TOKEN|AUTH_TOKEN|REFRESH_TOKEN/i.test(name) ||
+          KEY_PATTERNS.some((p) => { p.re.lastIndex = 0; return p.re.test(value); }) ||
+          decodeJwtPayload(value)?.role === "service_role");
       if (looksSecret && !PLACEHOLDER.test(value)) {
         findings.push({
           severity: "critical",
@@ -457,11 +573,20 @@ function detectPackageManager(files) {
   return "npm";
 }
 
-// Run `<tool> audit --json` (optionally scoped to prod deps) and bucket the
-// vulnerable package names by severity. audit exits non-zero when vulns exist,
-// so we read stdout off the thrown error too.
-async function auditBuckets(tool, root, extraArgs) {
-  const { stdout } = await exec(tool, ["audit", "--json", ...extraArgs], {
+const AUDIT_SEV_RANK = { critical: 4, high: 3, moderate: 2, low: 1 };
+
+// The audit runs with the scanned repo as its working directory, and npm reads
+// `.npmrc` from there. A repo we do not control could point `registry=` at a
+// server that returns "no vulnerabilities" for everything, which would let it
+// silently pass our dependency check. A CLI flag outranks every .npmrc, so pin
+// the real registry explicitly.
+const NPM_REGISTRY = "https://registry.npmjs.org/";
+
+// Run `<tool> audit --json` (optionally scoped to prod deps) and return a map of
+// package name -> { severity, fixAvailable, advisories }. audit exits non-zero
+// when vulns exist, so we read stdout off the thrown error too.
+async function auditPackages(tool, root, extraArgs) {
+  const { stdout } = await exec(tool, ["audit", "--json", `--registry=${NPM_REGISTRY}`, ...extraArgs], {
     cwd: root,
     maxBuffer: 20 * 1024 * 1024,
   }).catch((e) => ({ stdout: e.stdout || "" }));
@@ -474,19 +599,104 @@ async function auditBuckets(tool, root, extraArgs) {
   if (!data.vulnerabilities && !data.advisories) {
     throw new Error(data.error?.summary || data.error?.code || "audit returned no results");
   }
-  const bySev = { critical: [], high: [], moderate: [], low: [] };
+
+  const out = new Map();
   if (data.vulnerabilities) {
-    // npm v7+ format
+    // npm v7+ format. `via` carries the advisories themselves (objects) and/or
+    // the names of dependencies that pull the vulnerability in (strings).
     for (const [name, v] of Object.entries(data.vulnerabilities)) {
-      if (bySev[v.severity] && !bySev[v.severity].includes(name)) bySev[v.severity].push(name);
+      if (!AUDIT_SEV_RANK[v.severity]) continue;
+      const advisories = (v.via || [])
+        .filter((via) => via && typeof via === "object" && via.title)
+        .map((via) => ({ title: via.title, url: via.url || "", score: Number(via.cvss?.score) || 0 }))
+        .sort((a, b) => b.score - a.score); // worst first: it drives the severity
+      out.set(name, { name, severity: v.severity, fixAvailable: v.fixAvailable, advisories });
     }
-  } else if (data.advisories) {
-    // pnpm / npm v6 format
+  } else {
+    // pnpm / npm v6 format: one entry per advisory, so merge by package and
+    // keep the worst severity.
     for (const a of Object.values(data.advisories)) {
-      if (bySev[a.severity] && !bySev[a.severity].includes(a.module_name)) bySev[a.severity].push(a.module_name);
+      const name = a.module_name;
+      if (!name || !AUDIT_SEV_RANK[a.severity]) continue;
+      const advisory = { title: a.title || "", url: a.url || "", score: Number(a.cvss_score) || 0 };
+      const prev = out.get(name);
+      if (!prev) {
+        out.set(name, { name, severity: a.severity, fixAvailable: undefined, advisories: [advisory] });
+        continue;
+      }
+      prev.advisories.push(advisory);
+      prev.advisories.sort((x, y) => y.score - x.score);
+      if (AUDIT_SEV_RANK[a.severity] > AUDIT_SEV_RANK[prev.severity]) prev.severity = a.severity;
     }
   }
-  return bySev;
+  return out;
+}
+
+function pkgNames(pkgs, limit = 5) {
+  const shown = pkgs.slice(0, limit).map((p) => p.name).join(", ");
+  return pkgs.length > limit ? `${shown}, +${pkgs.length - limit} more` : shown;
+}
+
+// Name the specific advisory behind each package and link it. A bare "lodash is
+// critical" is unverifiable and reads like noise; "Prototype Pollution, CVSS
+// 9.1, here is the advisory" is something the reader can check for themselves.
+function describeVulnerablePackages(pkgs, sev) {
+  const lines = pkgs.slice(0, 8).map((p) => {
+    const top = p.advisories[0];
+    if (!top) return `• ${p.name}`;
+    const score = top.score ? ` (CVSS ${top.score})` : "";
+    const extra = p.advisories.length > 1 ? `, +${p.advisories.length - 1} more advisor${p.advisories.length === 2 ? "y" : "ies"}` : "";
+    return `• ${p.name} — ${top.title}${score}${extra}${top.url ? `\n  ${top.url}` : ""}`;
+  });
+  const more = pkgs.length > 8 ? `\n• ...and ${pkgs.length - 8} more` : "";
+  return (
+    `These packages ship with your app in production and have publicly documented ${sev} advisories:\n\n` +
+    lines.join("\n") +
+    more +
+    `\n\nThe advisories are public, so the details are available to anyone. Whether your app is actually exploitable depends on how your code uses each package, so open the links above and check what the vulnerability needs in order to trigger. Until you have checked, treat these as real.`
+  );
+}
+
+// Sort the fix advice by how much work it actually is. "Run npm audit fix" is
+// wrong advice for a package whose only fix is a breaking major bump, and the
+// user discovers that by running it and seeing nothing change.
+function dependencyFixAdvice(tool, pkgs) {
+  if (tool !== "npm") {
+    return (
+      "Run `pnpm audit` for the full list, upgrade with `pnpm update <package>`, and use `pnpm audit --fix` " +
+      "(writes overrides) for anything that can't upgrade cleanly. Re-test the app afterwards."
+    );
+  }
+  const safe = [];
+  const breaking = [];
+  const stuck = [];
+  for (const p of pkgs) {
+    const fa = p.fixAvailable;
+    if (fa === false || fa == null) stuck.push(p);
+    else if (fa === true || !fa.isSemVerMajor) safe.push(p);
+    else breaking.push(p);
+  }
+
+  const parts = [];
+  if (safe.length) {
+    const subject =
+      safe.length === pkgs.length
+        ? `All of these upgrade`
+        : `${safe.length} of these (${pkgNames(safe)}) upgrade${safe.length === 1 ? "s" : ""}`;
+    parts.push(`${subject} without a breaking change: run \`npm audit fix\`.`);
+  }
+  if (breaking.length) {
+    parts.push(
+      `${breaking.length} (${pkgNames(breaking)}) ${breaking.length === 1 ? "needs" : "need"} a major version bump, which can break your code: run \`npm audit fix --force\`, then test everything that uses ${breaking.length === 1 ? "it" : "them"}.`
+    );
+  }
+  if (stuck.length) {
+    parts.push(
+      `${stuck.length} (${pkgNames(stuck)}) ${stuck.length === 1 ? "has" : "have"} no published fix yet: open the advisory for a workaround, or swap the package out.`
+    );
+  }
+  parts.push("Re-run `npm audit` when you're done and re-test the app.");
+  return parts.join(" ");
 }
 
 export async function checkDependencies(root, files) {
@@ -525,43 +735,37 @@ export async function checkDependencies(root, files) {
   if (lock.pm === "npm" || lock.pm === "pnpm") {
     const tool = lock.pm;
     try {
-      const full = await auditBuckets(tool, root, []);
+      const all = await auditPackages(tool, root, []);
       // Second pass scoped to production dependencies. A CVE that only affects
       // local build/dev tooling (a test runner, a bundler plugin) is not
       // reachable in the deployed app, so it should not read as a "fix today"
       // critical. Best-effort: if this fails, treat everything as production.
-      let prodSet = null;
+      let prodNames = null;
       try {
         const prodArgs = tool === "npm" ? ["--omit=dev"] : ["--prod"];
-        const prod = await auditBuckets(tool, root, prodArgs);
-        prodSet = new Set([...prod.critical, ...prod.high, ...prod.moderate, ...prod.low]);
+        prodNames = new Set((await auditPackages(tool, root, prodArgs)).keys());
       } catch {}
 
-      const fixCmd = tool === "npm"
-        ? "Run `npm audit fix` (safe upgrades), then `npm audit` again and review what remains."
-        : "Run `pnpm audit` for the full list, upgrade with `pnpm update <package>`, and use `pnpm audit --fix` (writes overrides) for anything that can't upgrade cleanly.";
+      const everything = [...all.values()];
+      const prod = prodNames ? everything.filter((p) => prodNames.has(p.name)) : everything;
+      const devOnly = prodNames ? everything.filter((p) => !prodNames.has(p.name)) : [];
 
       for (const sev of ["critical", "high"]) {
-        const names = prodSet ? full[sev].filter((n) => prodSet.has(n)) : full[sev];
-        if (names.length) {
-          findings.push({
-            severity: sev,
-            title: `${names.length} ${names.length === 1 ? "dependency" : "dependencies"} with known ${sev} vulnerabilities`,
-            file: lock.file,
-            line: 1,
-            detail:
-              `Packages with publicly documented ${sev} security holes (CVEs): ${names.slice(0, 8).join(", ")}${names.length > 8 ? "..." : ""}. ` +
-              "These are frozen at whatever version the AI generated. Attackers can look up exactly how to exploit each one.",
-            fix: `${fixCmd} Re-test the app after upgrading.`,
-          });
-        }
+        const pkgs = prod.filter((p) => p.severity === sev);
+        if (!pkgs.length) continue;
+        findings.push({
+          severity: sev,
+          title: `${pkgs.length} ${pkgs.length === 1 ? "dependency" : "dependencies"} with known ${sev} vulnerabilities`,
+          file: lock.file,
+          line: 1,
+          detail: describeVulnerablePackages(pkgs, sev),
+          fix: dependencyFixAdvice(tool, pkgs),
+        });
       }
 
       // Critical/high advisories that only affect dev/build tooling: real, but
       // not exposed by the deployed app, so a cleanup note rather than a fire.
-      const devHigh = prodSet
-        ? [...full.critical, ...full.high].filter((n) => !prodSet.has(n))
-        : [];
+      const devHigh = devOnly.filter((p) => p.severity === "critical" || p.severity === "high");
       if (devHigh.length) {
         findings.push({
           severity: "info",
@@ -569,20 +773,22 @@ export async function checkDependencies(root, files) {
           file: lock.file,
           line: 1,
           detail:
-            `These advisories are in build or dev tooling (${devHigh.slice(0, 8).join(", ")}${devHigh.length > 8 ? "..." : ""}) that runs on your machine or in CI, not in the app you deploy, so an attacker hitting your live site can't reach them. Still worth cleaning up so they don't ship if your build setup changes.`,
+            `These advisories are in build or dev tooling (${pkgNames(devHigh, 8)}) that runs on your machine or in CI, not in the app you deploy, so an attacker hitting your live site can't reach them. Still worth cleaning up so they don't ship if your build setup changes.`,
           fix: `Run \`${tool} audit\` to see them and upgrade the dev tool when convenient.`,
         });
       }
 
-      const modLow = full.moderate.length + full.low.length;
-      if (modLow > 0) {
+      // Moderate/low, production only. Dev-tool advisories at this level are
+      // pure noise: not reachable in the deployed app and not urgent anywhere.
+      const modLow = prod.filter((p) => p.severity === "moderate" || p.severity === "low");
+      if (modLow.length) {
         findings.push({
           severity: "info",
-          title: `${modLow} dependencies with moderate/low advisories`,
+          title: `${modLow.length} production ${modLow.length === 1 ? "dependency has a" : "dependencies have"} moderate/low ${modLow.length === 1 ? "advisory" : "advisories"}`,
           file: lock.file,
           line: 1,
-          detail: "Lower-risk known issues in dependencies. Worth cleaning up but not urgent.",
-          fix: `Run \`${tool} audit\` for the list, upgrade when convenient.`,
+          detail: `Lower-risk known issues in packages that ship with your app: ${pkgNames(modLow, 8)}. Worth cleaning up but not urgent.`,
+          fix: `Run \`${tool} audit\` for the details, upgrade when convenient.`,
         });
       }
     } catch {

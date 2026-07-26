@@ -20,3 +20,7 @@ report.md
 
 # local-only agent settings
 .claude/settings.local.json
+
+# batch research output: names real third-party repos alongside their findings,
+# so it stays local. The scripts that produce it are committed, the data is not.
+vibeguard-scanner/research/
