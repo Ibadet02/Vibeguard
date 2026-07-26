@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VibeGuard: See what your AI left exposed</title>
-<meta name="description" content="VibeGuard x-rays the app you built with AI and reveals the security holes hiding under the surface, in plain English, before anyone else finds them.">
+<meta name="description" content="Paste your repo and VibeGuard x-rays the app you built with AI, revealing the security holes hiding under the surface in plain English, with the exact fixes.">
 <meta property="og:title" content="VibeGuard: Security x-ray for AI-built apps">
-<meta property="og:description" content="Your app looks fine. We see what's underneath. Free scan during early access.">
+<meta property="og:description" content="Your app looks fine. We see what's underneath. Paste your repo for a free scan.">
 <meta property="og:type" content="website">
 <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -17,10 +17,7 @@
 <style>
   :root {
     --ground: #0A0D15;
-    --ground-2: #0D111C;
     --surface: #121826;
-    --surface-2: #172033;
-    --surface-3: #1E293F;
     --line: #232E44;
     --line-2: #33415C;
     --ink: #EAEFF9;
@@ -28,459 +25,125 @@
     --faint: #5A6479;
     --cyan: #2FE4C7;
     --cyan-2: #6BF2DC;
-    --cyan-deep: #12A48E;
     --crit: #FF5C7A;
-    --high: #FFB44C;
-    --ok: #46D6A0;
     --display: "Clash Display", -apple-system, system-ui, sans-serif;
     --body: "Hanken Grotesk", -apple-system, system-ui, sans-serif;
     --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-    --maxw: 1160px;
   }
   * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  html { -webkit-text-size-adjust: 100%; }
   body {
     margin: 0; background: var(--ground); color: var(--ink);
     font-family: var(--body); line-height: 1.6; font-size: 17px;
-    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; overflow-x: hidden;
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+    min-height: 100vh; display: flex; flex-direction: column; overflow-x: hidden;
   }
+  /* ambient grid + glow, centered behind the input */
   body::before {
     content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
     background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
-    background-size: 46px 46px; opacity: 0.28;
-    mask-image: radial-gradient(ellipse 80% 55% at 72% 8%, #000 25%, transparent 72%);
-    -webkit-mask-image: radial-gradient(ellipse 80% 55% at 72% 8%, #000 25%, transparent 72%);
+    background-size: 46px 46px; opacity: 0.26;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 42%, #000 20%, transparent 72%);
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 42%, #000 20%, transparent 72%);
   }
   body::after {
-    content: ""; position: fixed; top: -20%; right: -8%; z-index: 0; pointer-events: none;
-    width: 64vw; height: 64vw; max-width: 900px; max-height: 900px;
-    background: radial-gradient(circle, rgba(47,228,199,0.14), rgba(47,228,199,0) 60%);
-    filter: blur(18px);
+    content: ""; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -60%);
+    z-index: 0; pointer-events: none;
+    width: 70vw; height: 70vw; max-width: 820px; max-height: 820px;
+    background: radial-gradient(circle, rgba(47,228,199,0.16), rgba(47,228,199,0) 60%);
+    filter: blur(20px);
   }
-  .wrap { position: relative; z-index: 1; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
-  a { color: inherit; text-decoration: none; }
-  h1, h2, h3 { margin: 0; font-family: var(--display); font-weight: 600; letter-spacing: -0.02em; line-height: 1.02; text-wrap: balance; }
-  h1 { font-size: clamp(2.6rem, 5.6vw, 4.3rem); font-weight: 700; }
-  h2 { font-size: clamp(1.9rem, 3.8vw, 2.9rem); }
-  h3 { font-size: 1.2rem; letter-spacing: -0.01em; }
-  p { margin: 0; }
-  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--cyan); margin: 0 0 20px; display: inline-flex; align-items: center; gap: 10px; }
-  .eyebrow::before { content: ""; width: 26px; height: 1px; background: var(--cyan); }
-  .lead { color: var(--muted); font-size: clamp(1.05rem, 1.5vw, 1.2rem); max-width: 42ch; }
-  .btn { font-family: var(--body); font-size: 0.98rem; font-weight: 600; border: 0; cursor: pointer; border-radius: 11px; padding: 13px 22px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; transition: transform .15s ease, box-shadow .25s ease, background .2s; white-space: nowrap; }
-  .btn-cyan { background: var(--cyan); color: #04120F; }
-  .btn-cyan:hover { background: var(--cyan-2); transform: translateY(-1px); box-shadow: 0 10px 34px rgba(47,228,199,0.3); }
-  .btn-sm { padding: 10px 17px; font-size: 0.9rem; }
-  .capture { display: flex; gap: 10px; width: 100%; max-width: 470px; }
-  .capture input[type=text], .capture input[type=email] { flex: 1; min-width: 0; font-family: var(--mono); font-size: 0.9rem; color: var(--ink); background: rgba(10,13,21,0.6); border: 1px solid var(--line-2); border-radius: 11px; padding: 13px 15px; transition: border-color .2s, box-shadow .2s; }
-  .capture input::placeholder { color: var(--faint); }
-  .capture input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(47,228,199,0.16); }
-  .capture .btn-cyan { flex: none; }
-  .microcopy { font-family: var(--mono); font-size: 11.5px; color: var(--faint); margin-top: 13px; letter-spacing: 0.02em; }
-  .capture-done { font-family: var(--mono); font-size: 0.9rem; color: var(--ok); padding: 13px 0; display: none; align-items: center; gap: 9px; }
-  :focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; border-radius: 5px; }
-  header { position: sticky; top: 0; z-index: 50; background: rgba(10,13,21,0.72); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-bottom: 1px solid transparent; transition: border-color .3s; }
-  header.stuck { border-bottom-color: var(--line); }
-  .nav { display: flex; align-items: center; justify-content: space-between; height: 72px; }
-  .brand { display: inline-flex; align-items: center; gap: 11px; font-family: var(--display); font-weight: 600; font-size: 1.15rem; letter-spacing: -0.01em; }
-  .brand svg { width: 27px; height: 27px; display: block; }
-  .nav-links { display: flex; align-items: center; gap: 32px; }
-  .nav-links a { font-size: 0.94rem; color: var(--muted); transition: color .2s; }
-  .nav-links a:hover { color: var(--ink); }
-  .hero { padding: 60px 0 46px; }
-  .hero-grid { display: grid; grid-template-columns: 1fr 1.12fr; gap: 54px; align-items: center; }
-  .hero h1 .u { color: var(--cyan); }
-  .hero .lead { margin: 24px 0 32px; }
-  /* ===== X-RAY SIGNATURE ===== */
-  .xray { position: relative; }
-  .win { background: linear-gradient(180deg, var(--surface-2), var(--surface)); border: 1px solid var(--line-2); border-radius: 16px; overflow: hidden; box-shadow: 0 50px 100px -45px rgba(0,0,0,0.85), 0 0 0 1px rgba(47,228,199,0.04); }
-  .win-bar { display: flex; align-items: center; gap: 8px; padding: 13px 15px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,0.014); }
-  .tl { width: 11px; height: 11px; border-radius: 50%; background: var(--line-2); }
-  .win-url { font-family: var(--mono); font-size: 12px; color: var(--faint); margin-left: 8px; }
-  .win-url b { color: var(--muted); font-weight: 500; }
-  .xray-toggle { margin-left: auto; display: inline-flex; background: rgba(10,13,21,0.7); border: 1px solid var(--line); border-radius: 9px; padding: 3px; gap: 2px; }
-  .xray-toggle button { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); background: transparent; border: 0; cursor: pointer; padding: 6px 11px; border-radius: 6px; transition: color .2s, background .2s; }
-  .xray-toggle button.on { color: #04120F; background: var(--cyan); }
-  .win-body { position: relative; height: 396px; overflow: hidden; }
-  .layer { position: absolute; inset: 0; padding: 22px; transition: opacity .55s ease; }
-  .app-top { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
-  .app-logo { font-family: var(--display); font-weight: 600; font-size: 1rem; display: flex; align-items: center; gap: 8px; }
-  .app-logo::before { content: ""; width: 18px; height: 18px; border-radius: 6px; background: linear-gradient(135deg, #8B5CF6, #6366F1); }
-  .app-nav { display: flex; gap: 18px; margin-left: 10px; }
-  .app-nav span { font-size: 12.5px; color: var(--muted); }
-  .app-nav span.admin { color: var(--ink); }
-  .app-av { margin-left: auto; width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, #F59E0B, #EF4444); }
-  .app-hi { font-family: var(--display); font-size: 1.25rem; font-weight: 600; margin-bottom: 4px; }
-  .app-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 18px; }
-  .app-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
-  .app-stat { background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 10px; padding: 13px; }
-  .app-stat .k { font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
-  .app-stat .v { font-family: var(--display); font-size: 1.35rem; font-weight: 600; margin-top: 3px; }
-  .app-list { background: rgba(255,255,255,0.02); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-  .app-row { display: flex; align-items: center; gap: 10px; padding: 10px 13px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
-  .app-row:first-child { border-top: 0; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; font-size: 10px; }
-  .app-row .d { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
-  .app-row .grow { margin-left: auto; font-family: var(--mono); font-size: 11px; }
-  .xray-layer { opacity: 0; background: rgba(8,12,20,0.35); }
-  .wire { position: absolute; border: 1px dashed rgba(47,228,199,0.45); border-radius: 8px; }
-  .wire.solid { border-style: solid; border-color: rgba(47,228,199,0.3); }
-  .grid-scan { position: absolute; inset: 0; background-image: linear-gradient(rgba(47,228,199,0.09) 1px, transparent 1px), linear-gradient(90deg, rgba(47,228,199,0.09) 1px, transparent 1px); background-size: 24px 24px; }
-  .hot { position: absolute; z-index: 4; }
-  .hot .dot { width: 15px; height: 15px; border-radius: 50%; background: var(--crit); box-shadow: 0 0 0 0 rgba(255,92,122,0.6); animation: ping 2s infinite; }
-  .hot .tag { position: absolute; white-space: nowrap; font-family: var(--mono); font-size: 10.5px; color: #fff; background: rgba(255,92,122,0.16); border: 1px solid rgba(255,92,122,0.5); padding: 4px 8px; border-radius: 6px; top: -9px; left: 24px; }
-  .hot .tag::before { content: ""; position: absolute; left: -16px; top: 50%; width: 16px; height: 1px; background: rgba(255,92,122,0.6); }
-  @keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(255,92,122,0.55);} 70%{ box-shadow: 0 0 0 12px rgba(255,92,122,0);} 100%{ box-shadow: 0 0 0 0 rgba(255,92,122,0);} }
-  .mode-surface .surface { opacity: 1; }
-  .mode-surface .xray-layer { opacity: 0; }
-  .mode-xray .surface { opacity: 0.12; filter: grayscale(0.6); }
-  .mode-xray .xray-layer { opacity: 1; }
-  .sweep { position: absolute; left: 0; right: 0; top: 0; height: 90px; z-index: 5; pointer-events: none; opacity: 0;
-    background: linear-gradient(180deg, rgba(47,228,199,0) 0%, rgba(47,228,199,0.12) 78%, rgba(47,228,199,0.5) 100%);
-    border-bottom: 1.5px solid var(--cyan); box-shadow: 0 0 22px rgba(47,228,199,0.4); }
-  .sweeping .sweep { animation: sweep 1.6s cubic-bezier(.55,0,.35,1) forwards; }
-  @keyframes sweep { 0% { top: -90px; opacity: 1; } 90% { opacity: 1; } 100% { top: 100%; opacity: 0; } }
-  .strip { padding: 26px 0 6px; }
-  .strip p { font-family: var(--mono); font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--faint); text-align: center; margin-bottom: 18px; }
-  .strip-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
-  .tool { font-family: var(--mono); font-size: 13px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 7px 15px; transition: color .2s, border-color .2s; }
-  .tool:hover { color: var(--cyan); border-color: var(--line-2); }
-  .section { padding: 92px 0; position: relative; }
-  .sec-head { max-width: 44ch; margin-bottom: 48px; }
-  .sec-head .sub { color: var(--muted); margin-top: 16px; font-size: 1.06rem; }
-  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
-  .card { background: linear-gradient(180deg, var(--surface), var(--ground-2)); border: 1px solid var(--line); border-radius: 15px; padding: 27px; transition: border-color .25s, transform .25s; }
-  .card:hover { border-color: var(--line-2); transform: translateY(-3px); }
-  .card .tag2 { font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; padding: 4px 9px; border-radius: 6px; display: inline-block; margin-bottom: 16px; }
-  .tag2.crit { color: var(--crit); background: rgba(255,92,122,0.11); }
-  .tag2.high { color: var(--high); background: rgba(255,180,76,0.11); }
-  .card h3 { margin-bottom: 9px; }
-  .card p { color: var(--muted); font-size: 0.95rem; }
-  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
-  .step { position: relative; padding-top: 26px; }
-  .step .bar { position: absolute; top: 0; left: 0; width: 46px; height: 2px; background: var(--cyan); }
-  .step .lbl { font-family: var(--mono); font-size: 12px; color: var(--cyan); letter-spacing: .08em; }
-  .step h3 { margin: 13px 0 8px; }
-  .step p { color: var(--muted); font-size: 0.95rem; }
-  .checks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-  .check { display: flex; align-items: flex-start; gap: 11px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 17px; }
-  .check svg { flex: none; margin-top: 1px; }
-  .check .ct { font-size: 0.92rem; font-weight: 600; }
-  .check .cd { font-size: 0.8rem; color: var(--muted); margin-top: 3px; line-height: 1.42; }
-  .trust { background: linear-gradient(120deg, var(--surface-2), var(--ground-2)); border: 1px solid var(--line); border-radius: 20px; padding: 46px; display: grid; grid-template-columns: 1fr 1fr; gap: 42px; align-items: center; }
-  .trust-list { display: grid; gap: 17px; }
-  .trust-item { display: flex; gap: 13px; align-items: flex-start; }
-  .trust-item svg { flex: none; margin-top: 2px; }
-  .trust-item b { font-weight: 600; }
-  .trust-item span { color: var(--muted); font-size: 0.92rem; }
-  .cta-inner { background: radial-gradient(ellipse 75% 130% at 50% 0%, rgba(47,228,199,0.13), transparent 68%), var(--surface); border: 1px solid var(--line-2); border-radius: 22px; padding: 64px 32px; text-align: center; }
-  .cta-inner .eyebrow { justify-content: center; }
-  .cta-inner h2 { margin-bottom: 14px; }
-  .cta-inner .lead { max-width: 48ch; margin: 0 auto 30px; }
-  .cta-inner .capture { margin: 0 auto; }
-  .cta-inner .capture-done { justify-content: center; }
-  .faq { max-width: 760px; }
-  details { border-bottom: 1px solid var(--line); padding: 22px 0; }
-  details summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 20px; font-family: var(--display); font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; }
-  details summary::-webkit-details-marker { display: none; }
-  details summary .plus { font-family: var(--mono); color: var(--cyan); font-size: 1.35rem; transition: transform .25s; flex: none; }
-  details[open] summary .plus { transform: rotate(45deg); }
-  details p { color: var(--muted); margin-top: 14px; font-size: 0.97rem; max-width: 64ch; }
-  footer { border-top: 1px solid var(--line); padding: 42px 0; margin-top: 46px; }
-  .foot { display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; }
-  .foot p { font-family: var(--mono); font-size: 12px; color: var(--faint); }
-  @media (max-width: 940px) {
-    .hero-grid { grid-template-columns: 1fr; gap: 42px; }
-    .hero .lead { max-width: none; }
-    .cards, .steps { grid-template-columns: 1fr; }
-    .checks { grid-template-columns: repeat(2, 1fr); }
-    .trust { grid-template-columns: 1fr; padding: 32px; }
-    .nav-links { display: none; }
-    .section { padding: 64px 0; }
+
+  .top { position: relative; z-index: 1; display: flex; justify-content: center; padding: 28px 24px 0; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; font-family: var(--display); font-weight: 700; font-size: 1.15rem; letter-spacing: -0.01em; }
+
+  main {
+    position: relative; z-index: 1; flex: 1;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 24px 24px 64px; gap: 0;
+  }
+  h1 {
+    font-family: var(--display); font-weight: 700; letter-spacing: -0.02em; line-height: 1.04;
+    font-size: clamp(2.1rem, 5.4vw, 3.5rem); margin: 0 0 18px; text-wrap: balance;
+  }
+  h1 .u { color: var(--cyan); }
+  .lead { color: var(--muted); font-size: clamp(1.02rem, 1.6vw, 1.18rem); max-width: 48ch; margin: 0 auto 36px; }
+
+  form.xray {
+    display: flex; gap: 10px; width: 100%; max-width: 600px; padding: 8px; border-radius: 18px;
+    background: rgba(47,228,199,0.055); border: 1px solid rgba(47,228,199,0.28);
+    box-shadow: 0 0 0 4px rgba(47,228,199,0.06), 0 24px 60px -24px rgba(47,228,199,0.45);
+    animation: ctaGlow 3.2s ease-in-out infinite;
+  }
+  form.xray input {
+    flex: 1; min-width: 0; font-family: var(--mono); font-size: 1.05rem; color: var(--ink);
+    background: rgba(10,13,21,0.55); border: 1px solid transparent; border-radius: 12px; padding: 18px;
+    transition: box-shadow .2s;
+  }
+  form.xray input::placeholder { color: var(--faint); }
+  form.xray input:focus { outline: none; box-shadow: 0 0 0 3px rgba(47,228,199,0.22); }
+  .btn {
+    font-family: var(--body); font-weight: 700; font-size: 1.05rem; border: 0; cursor: pointer;
+    border-radius: 12px; padding: 18px 30px; background: var(--cyan); color: #04120F;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap;
+    transition: transform .15s ease, box-shadow .25s ease, background .2s;
+  }
+  .btn:hover { background: var(--cyan-2); transform: translateY(-1px); box-shadow: 0 10px 34px rgba(47,228,199,0.3); }
+  .microcopy { font-family: var(--mono); font-size: 12px; color: var(--faint); margin-top: 20px; letter-spacing: 0.02em; }
+
+  footer { position: relative; z-index: 1; text-align: center; padding: 18px 24px 30px; color: var(--faint); font-size: 13px; }
+  footer a { color: var(--muted); text-decoration: none; }
+  footer a:hover { color: var(--ink); }
+
+  @keyframes ctaGlow {
+    0%, 100% { box-shadow: 0 0 0 4px rgba(47,228,199,0.05), 0 24px 60px -24px rgba(47,228,199,0.35); }
+    50% { box-shadow: 0 0 0 5px rgba(47,228,199,0.12), 0 26px 66px -22px rgba(47,228,199,0.55); }
   }
   @media (max-width: 540px) {
-    .checks { grid-template-columns: 1fr; }
-    .capture { flex-direction: column; }
-    .capture .btn-cyan { width: 100%; }
-    .cta-inner { padding: 44px 20px; }
-    .win-body { height: 360px; }
+    form.xray { flex-direction: column; }
+    .btn { width: 100%; }
   }
   @media (prefers-reduced-motion: reduce) {
-    html { scroll-behavior: auto; }
-    .sweeping .sweep { animation: none; opacity: 0; }
-    .hot .dot { animation: none; }
-    .layer { transition: none; }
+    form.xray { animation: none; }
   }
 </style>
 </head>
 <body>
-<header id="hdr">
-  <div class="wrap nav">
-    <a class="brand" href="#top">
-      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+  <div class="top">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true" width="26" height="26">
         <rect x="4" y="5" width="24" height="22" rx="5" fill="none" stroke="#2FE4C7" stroke-width="2"/>
         <line x1="4" y1="16" x2="28" y2="16" stroke="#2FE4C7" stroke-width="2"/>
         <circle cx="21" cy="11" r="2.4" fill="#FF5C7A"/>
       </svg>
       VibeGuard
     </a>
-    <nav class="nav-links">
-      <a href="#problem">The risk</a>
-      <a href="#how">How it works</a>
-      <a href="#checks">What we check</a>
-      <a href="#faq">FAQ</a>
-    </nav>
-    <a href="#get" class="btn btn-cyan btn-sm">Scan my app</a>
   </div>
-</header>
-<main id="top">
-  <section class="hero">
-    <div class="wrap hero-grid">
-      <div>
-        <p class="eyebrow">Security x-ray for AI-built apps</p>
-        <h1>Your app looks fine.<br>We see what's <span class="u">underneath.</span></h1>
-        <p class="lead">VibeGuard x-rays the app you built with AI and reveals the security holes hiding under the surface, in plain English, before anyone else finds them.</p>
-        <div>
-          <form class="capture" data-kind="repo" name="vg-repo" method="POST" data-netlify="true" netlify-honeypot="bot-field">
-            <input type="hidden" name="form-name" value="vg-repo">
-            <p hidden><label>Leave empty <input name="bot-field"></label></p>
-            <input type="text" name="repo" placeholder="github.com/you/your-app" aria-label="Your repository URL" required>
-            <button type="submit" class="btn btn-cyan">X-ray it free</button>
-          </form>
-          <div class="capture-done" data-done="repo">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 12.5 10 17.5 19 6.5" stroke="#46D6A0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            On the list. We'll email your free scan shortly.
-          </div>
-          <p class="microcopy">No credit card · read-only access · we never store your code</p>
-        </div>
-      </div>
-      <div class="xray mode-surface" id="xray">
-        <div class="win">
-          <div class="win-bar">
-            <span class="tl"></span><span class="tl"></span><span class="tl"></span>
-            <span class="win-url"><b>myapp.com</b></span>
-            <div class="xray-toggle" role="group" aria-label="View mode">
-              <button type="button" data-mode="surface" class="on">Surface</button>
-              <button type="button" data-mode="xray">X-ray</button>
-            </div>
-          </div>
-          <div class="win-body">
-            <div class="layer surface">
-              <div class="app-top">
-                <span class="app-logo">Dashly</span>
-                <span class="app-nav"><span>Home</span><span>Data</span><span class="admin">Admin</span></span>
-                <span class="app-av"></span>
-              </div>
-              <div class="app-hi">Welcome back, Sam</div>
-              <div class="app-sub">Here's how your product is doing today.</div>
-              <div class="app-stats">
-                <div class="app-stat"><div class="k">Users</div><div class="v">2,481</div></div>
-                <div class="app-stat"><div class="k">Revenue</div><div class="v">$8.3k</div></div>
-                <div class="app-stat"><div class="k">Active</div><div class="v">312</div></div>
-              </div>
-              <div class="app-list">
-                <div class="app-row"><span>Recent signups</span><span class="grow">status</span></div>
-                <div class="app-row"><span class="d"></span>maria@acme.co<span class="grow">active</span></div>
-                <div class="app-row"><span class="d"></span>devon@studio.io<span class="grow">active</span></div>
-                <div class="app-row"><span class="d"></span>lee@hey.com<span class="grow">active</span></div>
-              </div>
-            </div>
-            <div class="layer xray-layer">
-              <div class="grid-scan"></div>
-              <div class="wire" style="top:18px;left:22px;right:22px;height:34px;"></div>
-              <div class="wire solid" style="top:96px;left:22px;width:29%;height:66px;"></div>
-              <div class="wire solid" style="top:96px;left:36.5%;width:29%;height:66px;"></div>
-              <div class="wire solid" style="top:96px;left:71%;right:22px;height:66px;"></div>
-              <div class="wire" style="top:182px;left:22px;right:22px;bottom:22px;"></div>
-              <div class="hot" style="top:26px;left:70%;">
-                <div class="dot"></div>
-                <div class="tag">API key exposed · config.js:42</div>
-              </div>
-              <div class="hot" style="top:210px;left:30%;">
-                <div class="dot"></div>
-                <div class="tag">Database open to the public</div>
-              </div>
-              <div class="hot" style="top:28px;left:47%;">
-                <div class="dot"></div>
-                <div class="tag">/admin has no login</div>
-              </div>
-            </div>
-            <div class="sweep"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-  <div class="strip">
-    <div class="wrap">
-      <p>Scans apps built with</p>
-      <div class="strip-row">
-        <span class="tool">Lovable</span><span class="tool">Bolt</span><span class="tool">v0</span>
-        <span class="tool">Cursor</span><span class="tool">Replit</span><span class="tool">Claude Code</span>
-        <span class="tool">Windsurf</span><span class="tool">…or plain code</span>
-      </div>
-    </div>
-  </div>
-  <section class="section" id="problem">
-    <div class="wrap">
-      <div class="sec-head">
-        <p class="eyebrow">The holes you can't see</p>
-        <h2>AI writes code fast. It won't tell you what it broke.</h2>
-        <p class="sub">The same three holes turn up in almost every AI-built app, invisible unless you can read the code. Here's what routinely ships to production:</p>
-      </div>
-      <div class="cards">
-        <div class="card">
-          <span class="tag2 crit">Exposed secrets</span>
-          <h3>Your keys, in plain sight</h3>
-          <p>API keys and passwords left in the front-end, where any visitor can copy them, then spend your money.</p>
-        </div>
-        <div class="card">
-          <span class="tag2 crit">Open databases</span>
-          <h3>Everyone's data, unlocked</h3>
-          <p>Database rules left switched off, so one user can read (or delete) every other user's records.</p>
-        </div>
-        <div class="card">
-          <span class="tag2 high">Missing auth</span>
-          <h3>Doors with no locks</h3>
-          <p>Admin pages and private APIs with no login check. If someone guesses the URL, they're in.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-  <section class="section" id="how">
-    <div class="wrap">
-      <div class="sec-head">
-        <p class="eyebrow">How it works</p>
-        <h2>Three steps. No security knowledge required.</h2>
-      </div>
-      <div class="steps">
-        <div class="step"><span class="bar"></span><span class="lbl">STEP 01</span><h3>Connect your app</h3><p>Paste a GitHub link or drop your project folder. Read-only. We look, we don't touch.</p></div>
-        <div class="step"><span class="bar"></span><span class="lbl">STEP 02</span><h3>We x-ray it</h3><p>Real security tools plus AI comb through your code and config for the holes attackers look for.</p></div>
-        <div class="step"><span class="bar"></span><span class="lbl">STEP 03</span><h3>Get plain-English fixes</h3><p>Each issue explained like a human would, with the exact change to paste back into your AI editor.</p></div>
-      </div>
-    </div>
-  </section>
-  <section class="section" id="checks">
-    <div class="wrap">
-      <div class="sec-head"><p class="eyebrow">What we check</p><h2>A full sweep, every time you ship.</h2></div>
-      <div class="checks">
-        <div class="check"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#2FE4C7" stroke-width="1.4" stroke-opacity="0.4"/><path d="M8 12.5 11 15.5 16.5 9" stroke="#2FE4C7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg><div><div class="ct">Exposed API keys</div><div class="cd">Secrets that leaked into the front-end</div></div></div>
-        <div class="check"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#2FE4C7" stroke-width="1.4" stroke-opacity="0.4"/><path d="M8 12.5 11 15.5 16.5 9" stroke="#2FE4C7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg><div><div class="ct">Database access rules</div><div class="cd">Data anyone can read or change</div></div></div>
-        <div class="check"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#2FE4C7" stroke-width="1.4" stroke-opacity="0.4"/><path d="M8 12.5 11 15.5 16.5 9" stroke="#2FE4C7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg><div><div class="ct">Authentication</div><div class="cd">Pages and APIs missing a login check</div></div></div>
-        <div class="check"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#2FE4C7" stroke-width="1.4" stroke-opacity="0.4"/><path d="M8 12.5 11 15.5 16.5 9" stroke="#2FE4C7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg><div><div class="ct">Injection risks</div><div class="cd">Inputs that let attackers run commands</div></div></div>
-        <div class="check"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#2FE4C7" stroke-width="1.4" stroke-opacity="0.4"/><path d="M8 12.5 11 15.5 16.5 9" stroke="#2FE4C7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg><div><div class="ct">Dependency alerts</div><div class="cd">Known-vulnerable packages you rely on</div></div></div>
-        <div class="check"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#2FE4C7" stroke-width="1.4" stroke-opacity="0.4"/><path d="M8 12.5 11 15.5 16.5 9" stroke="#2FE4C7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg><div><div class="ct">Leaky error messages</div><div class="cd">Crashes that reveal your internals</div></div></div>
-        <div class="check"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#2FE4C7" stroke-width="1.4" stroke-opacity="0.4"/><path d="M8 12.5 11 15.5 16.5 9" stroke="#2FE4C7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg><div><div class="ct">CORS &amp; config</div><div class="cd">Settings that trust the wrong origins</div></div></div>
-        <div class="check"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#2FE4C7" stroke-width="1.4" stroke-opacity="0.4"/><path d="M8 12.5 11 15.5 16.5 9" stroke="#2FE4C7" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg><div><div class="ct">Rate limiting</div><div class="cd">Endpoints open to abuse and spam</div></div></div>
-      </div>
-    </div>
-  </section>
-  <section class="section">
-    <div class="wrap">
-      <div class="trust">
-        <div>
-          <p class="eyebrow">Your code stays yours</p>
-          <h2>We're a security tool. We act like one.</h2>
-          <p class="sub" style="max-width:38ch">You shouldn't have to trust a stranger with your source code. So we built VibeGuard to earn it.</p>
-        </div>
-        <div class="trust-list">
-          <div class="trust-item"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2 4 5.5V11c0 5 3.4 8 8 9.6 4.6-1.6 8-4.6 8-9.6V5.5L12 2Z" stroke="#2FE4C7" stroke-width="1.5"/><path d="M9 12l2 2 4-4.5" stroke="#2FE4C7" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><div><b>Read-only access.</b> <span>We inspect your code. We never modify, push, or deploy anything.</span></div></div>
-          <div class="trust-item"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="4" y="10" width="16" height="10" rx="2" stroke="#2FE4C7" stroke-width="1.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="#2FE4C7" stroke-width="1.5"/></svg><div><b>Never stored.</b> <span>Your code is scanned in memory and discarded the moment the report is ready.</span></div></div>
-          <div class="trust-item"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#2FE4C7" stroke-width="1.5"/><path d="M12 7v5l3 2" stroke="#2FE4C7" stroke-width="1.6" stroke-linecap="round"/></svg><div><b>You stay in control.</b> <span>We hand you the fixes. You decide what to change. Nothing happens automatically.</span></div></div>
-        </div>
-      </div>
-    </div>
-  </section>
-  <section class="section" id="get">
-    <div class="wrap">
-      <div class="cta-inner">
-        <p class="eyebrow">Free during early access</p>
-        <h2>See what's hiding<br>in your app.</h2>
-        <p class="lead">Drop your email and we'll run a free security x-ray on your app, and send back exactly what to fix.</p>
-        <form class="capture" data-kind="email" name="vg-email" method="POST" data-netlify="true" netlify-honeypot="bot-field">
-          <input type="hidden" name="form-name" value="vg-email">
-          <p hidden><label>Leave empty <input name="bot-field"></label></p>
-          <input type="email" name="email" placeholder="you@email.com" aria-label="Your email" required>
-          <button type="submit" class="btn btn-cyan">Get my free scan</button>
-        </form>
-        <div class="capture-done" data-done="email">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 12.5 10 17.5 19 6.5" stroke="#46D6A0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          You're in. Check your inbox for next steps.
-        </div>
-      </div>
-    </div>
-  </section>
-  <section class="section" id="faq">
-    <div class="wrap">
-      <div class="sec-head"><p class="eyebrow">Questions</p><h2>The honest answers.</h2></div>
-      <div class="faq">
-        <details open><summary>Do I need to be technical to use this?<span class="plus">+</span></summary><p>No, that's the whole point. VibeGuard is built for people who shipped an app with AI and can't read the code well enough to spot the danger. Every issue is explained in plain English, with the exact fix.</p></details>
-        <details><summary>Isn't this just something ChatGPT could tell me?<span class="plus">+</span></summary><p>ChatGPT can review one file if you know what to ask. VibeGuard scans your whole project and its configuration, combines AI with real security scanners, and re-checks automatically every time you ship, so you don't have to know what to ask, or remember to.</p></details>
-        <details><summary>Will you store or share my code?<span class="plus">+</span></summary><p>Never. Access is read-only, the scan runs in memory, and your code is discarded as soon as the report is generated. We're a security tool, and leaking your code would defeat the purpose.</p></details>
-        <details><summary>Which tools and stacks do you support?<span class="plus">+</span></summary><p>Anything that lives in a Git repo: apps from Lovable, Bolt, v0, Cursor, Replit, Claude Code, Windsurf, or hand-written code. If it's JavaScript, TypeScript, Python, or a common web stack, we can scan it.</p></details>
-        <details><summary>Is it really free?<span class="plus">+</span></summary><p>Your first scan is free during early access. We're working with early users to get the fixes exactly right, so join now and help shape it.</p></details>
-      </div>
-    </div>
-  </section>
-</main>
-<footer>
-  <div class="wrap foot">
-    <a class="brand" href="#top">
-      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true" width="24" height="24">
-        <rect x="4" y="5" width="24" height="22" rx="5" fill="none" stroke="#2FE4C7" stroke-width="2"/>
-        <line x1="4" y1="16" x2="28" y2="16" stroke="#2FE4C7" stroke-width="2"/>
-        <circle cx="21" cy="11" r="2.4" fill="#FF5C7A"/>
-      </svg>
-      VibeGuard
-    </a>
-    <p>Built for people who ship fast. · Early access 2026</p>
-  </div>
-</footer>
-<script>
-  var hdr = document.getElementById('hdr');
-  var onScroll = function () { hdr.classList.toggle('stuck', window.scrollY > 8); };
-  onScroll(); window.addEventListener('scroll', onScroll, { passive: true });
 
-  var xray = document.getElementById('xray');
-  var btns = xray.querySelectorAll('.xray-toggle button');
-  function setMode(m) {
-    xray.classList.toggle('mode-xray', m === 'xray');
-    xray.classList.toggle('mode-surface', m === 'surface');
-    btns.forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-mode') === m); });
-  }
-  btns.forEach(function (b) {
-    b.addEventListener('click', function () { xray.classList.remove('sweeping'); setMode(b.getAttribute('data-mode')); });
-  });
-  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (reduce) {
-    setMode('xray');
-  } else {
-    var played = false;
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        if (e.isIntersecting && !played) {
-          played = true;
-          xray.classList.add('sweeping');
-          setTimeout(function () { setMode('xray'); }, 1450);
-          setTimeout(function () { xray.classList.remove('sweeping'); }, 1750);
-        }
-      });
-    }, { threshold: 0.4 });
-    io.observe(xray);
-  }
+  <main>
+    <h1>Your app looks fine.<br>We see what's <span class="u">underneath.</span></h1>
+    <p class="lead">Paste your repo. VibeGuard x-rays the app you built with AI and shows the security holes in plain English, with the exact fixes.</p>
+    <form class="xray" id="xrayForm">
+      <input type="text" name="repo" placeholder="github.com/you/your-app" aria-label="Your repository URL" required autofocus>
+      <button type="submit" class="btn">X-ray it free</button>
+    </form>
+    <p class="microcopy">No sign-up · public repos · we delete your code right after the scan</p>
+  </main>
 
-  document.querySelectorAll('.capture').forEach(function (form) {
-    form.addEventListener('submit', function (ev) {
+  <footer>
+    <a href="https://vibeguard-production-1778.up.railway.app/privacy">Privacy</a> ·
+    <a href="https://vibeguard-production-1778.up.railway.app/terms">Terms</a>
+  </footer>
+
+  <script>
+    // Hand the repo off to the live scanner, which auto-starts on ?target=.
+    var VG_SCANNER = 'https://vibeguard-production-1778.up.railway.app';
+    document.getElementById('xrayForm').addEventListener('submit', function (ev) {
       ev.preventDefault();
-      var kind = form.getAttribute('data-kind');
-      var done = document.querySelector('[data-done="' + kind + '"]');
-      try {
-        var body = new URLSearchParams(new FormData(form)).toString();
-        fetch('/', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body }).catch(function () {});
-      } catch (e) {}
-      form.style.display = 'none';
-      if (done) done.style.display = 'flex';
+      var v = (this.repo.value || '').trim();
+      if (!v) return;
+      window.location.href = VG_SCANNER + '/?target=' + encodeURIComponent(v);
     });
-  });
-</script>
+  </script>
 </body>
 </html>
