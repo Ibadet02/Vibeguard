@@ -73,6 +73,15 @@
   .emailrow input::placeholder { color: var(--faint); }
   .emailrow input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(47,228,199,0.16); }
   .emailnote { display: none; max-width: 620px; margin: 14px auto 0; text-align: center; color: var(--cyan-2); font-family: var(--mono); font-size: 12px; }
+  .liverow { max-width: 620px; margin: 12px auto 0; }
+  .livetoggle { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; color: var(--muted); font-size: 13px; line-height: 1.45; }
+  .livetoggle input { margin: 2px 0 0; accent-color: var(--cyan); flex-shrink: 0; cursor: pointer; }
+  .livebody { margin: 10px 0 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); display: flex; flex-direction: column; gap: 9px; }
+  .livebody input[type="text"], .livebody input:not([type]) { width: 100%; font-family: var(--mono); font-size: 0.86rem; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 13px; }
+  .livebody input::placeholder { color: var(--faint); }
+  .livebody input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(47,228,199,0.16); }
+  .livehint { color: var(--faint); font-family: var(--mono); font-size: 11px; line-height: 1.6; margin: 2px 0 0; letter-spacing: 0.01em; }
+  .livehint strong { color: var(--muted); }
   .hint { text-align: center; color: var(--faint); font-family: var(--mono); font-size: 11.5px; margin: 14px auto 0; max-width: 60ch; letter-spacing: 0.02em; }
 
   @keyframes ctaGlow {
@@ -109,7 +118,9 @@
   .card.info { border-left-color: var(--info); }
   .card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
   .card .where { color: var(--muted); font-size: 12px; font-family: var(--mono); margin-bottom: 8px; }
-  .card p { margin: 6px 0; font-size: 14px; color: var(--ink); }
+  /* pre-wrap so multi-line detail (advisory lists, AI triage notes) keeps its
+     line breaks instead of collapsing into one paragraph */
+  .card p { margin: 6px 0; font-size: 14px; color: var(--ink); white-space: pre-wrap; }
   .card .fixlabel { color: var(--cyan); font-weight: 600; }
   .sev { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 999px; margin-right: 8px; vertical-align: 2px; }
   .sev.critical { background: rgba(255,92,122,0.15); color: var(--crit); }
@@ -159,6 +170,28 @@
   </div>
   <div class="emailrow" id="emailrow" hidden>
     <input id="email" type="email" placeholder="you@email.com — email me the report (optional)" aria-label="Email (optional)" />
+  </div>
+
+  <!-- Live database check. Off by default and gated on an ownership
+       affirmation: unlike scanning a repo, this sends requests to a real
+       production database, so it must never happen without the user asking. -->
+  <div class="liverow">
+    <label class="livetoggle">
+      <input type="checkbox" id="liveOn" />
+      <span>Also check my live Supabase database (finds tables anyone on the internet can read)</span>
+    </label>
+    <div class="livebody" id="liveBody" hidden>
+      <label class="livetoggle">
+        <input type="checkbox" id="liveConsent" />
+        <span>I own this app, or I have permission to test it.</span>
+      </label>
+      <input id="liveUrl" placeholder="https://yourproject.supabase.co (optional — we'll look in your repo)" aria-label="Supabase project URL" />
+      <input id="liveKey" placeholder="anon / publishable key (optional)" aria-label="Supabase anon key" />
+      <p class="livehint">
+        Use the <strong>anon</strong> key from Supabase &rsaquo; Settings &rsaquo; API. It already ships inside your app, so sharing it changes nothing.
+        Never paste your <strong>service_role</strong> key, here or anywhere. We only read: we ask each table for its row count and never fetch anyone's data.
+      </p>
+    </div>
   </div>
   <p class="hint">Public repositories only. The deep AI review sends your code to our analysis provider for the duration of the scan. Don't scan secrets you can't rotate.</p>
   <div class="emailnote" id="emailnote"></div>
@@ -215,7 +248,18 @@
   function estPct(elapsedSec) { return Math.min(95, 95 * (1 - Math.exp(-elapsedSec / 80))); }
 
   let loaderTimer = null, loaderT0 = 0;
+  // Set while the job is waiting for a worker slot. Queue time is not scan
+  // progress, so the bar stays parked and the timer restarts once we start.
+  let queueInfo = null;
   function tickLoader() {
+    if (queueInfo) {
+      const mins = Math.max(1, Math.round(queueInfo.etaSeconds / 60));
+      $("statusMsg").textContent =
+        `Waiting for a free scanner — #${queueInfo.position} in line, about ${mins} min${mins === 1 ? "" : "s"} until it starts`;
+      $("pfill").style.width = "2%";
+      $("pct").textContent = "0%";
+      return;
+    }
     const el = (Date.now() - loaderT0) / 1000;
     let msg = PHASES[0][1];
     for (const [t, m] of PHASES) if (el >= t) msg = m;
@@ -226,6 +270,7 @@
   }
   function startLoader() {
     loaderT0 = Date.now();
+    queueInfo = null;
     $("pfill").style.width = "0%";
     $("pct").textContent = "0%";
     $("loader").style.display = "block";
@@ -246,6 +291,24 @@
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Reveal the live-check fields only once the box is ticked, and send nothing
+  // about the live check unless the user turned it on. The server re-checks
+  // consent regardless — this is convenience, not the gate.
+  $("liveOn").addEventListener("change", () => {
+    $("liveBody").hidden = !$("liveOn").checked;
+    if (!$("liveOn").checked) $("liveConsent").checked = false;
+  });
+
+  function livePayload() {
+    if (!$("liveOn").checked) return null;
+    return {
+      enabled: true,
+      consent: $("liveConsent").checked,
+      url: $("liveUrl").value.trim(),
+      anonKey: $("liveKey").value.trim(),
+    };
+  }
 
   async function scan() {
     const target = $("target").value.trim();
@@ -269,11 +332,17 @@
       const r = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, email }),
+        body: JSON.stringify({ target, email, live: livePayload() }),
       });
       const started = await r.json();
       if (!r.ok) throw new Error(started.error || "Scan failed");
       const jobId = started.jobId;
+      // Show the queue message straight away rather than after the first poll.
+      if (started.position > 0) {
+        queueInfo = { position: started.position, etaSeconds: started.etaSeconds || 0 };
+        tickLoader();
+      }
+      let runningSeen = false;
 
       // Poll until done. The scan runs server-side and can take minutes, so we
       // don't hold a single request open (hosting proxies would time it out).
@@ -288,8 +357,18 @@
           // Transient network blip while polling: keep waiting.
           continue;
         }
-        if (data.status === "running") continue;
+        if (data.status === "queued") {
+          queueInfo = { position: data.position, etaSeconds: data.etaSeconds || 0 };
+          continue;
+        }
+        if (data.status === "running") {
+          // First time we see it running: drop the queue message and restart the
+          // progress estimate, so waiting in line doesn't inflate the percentage.
+          if (!runningSeen) { runningSeen = true; queueInfo = null; loaderT0 = Date.now(); }
+          continue;
+        }
         if (data.status === "error") throw new Error(data.error || "Scan failed");
+        queueInfo = null;
         // done
         lastMd = data.markdown;
         fillComplete();
