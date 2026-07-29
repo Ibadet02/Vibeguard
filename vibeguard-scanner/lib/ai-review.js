@@ -115,32 +115,38 @@ const SYSTEM_PROMPT =
   "- list_files(pattern?): list file paths, optionally filtered by a regex on the path.\n" +
   "- read_file(path, start?, end?): read a file with line numbers.\n" +
   "- grep(pattern, flags?): search every file for a regex; returns path:line: matched text.\n\n" +
-  "Work like a real reviewer: start from the routes/handlers and the code they call, follow the data, and READ enough to be sure before reporting. Do not guess from a file name.\n\n" +
-  "Look for concrete correctness mistakes in these areas:\n" +
-  "1. Access control / data ownership: an endpoint uses an id from the request (query, body, params, headers) to read or change a record without confirming it belongs to the signed-in user; missing login checks on endpoints that touch private data; multi-tenant data that isn't scoped to the current tenant.\n" +
-  "2. Trusting the client for server decisions: role/permission/isAdmin flags, prices, amounts, quantities, or user ids taken from the request and acted on as if reliable.\n" +
-  "3. Input handling: request input used unsafely in a database query, a file path, a URL the server fetches, or a shell command (injection / path traversal / server-side request issues).\n" +
-  "4. Secret exposure: API keys, service-role keys, or other credentials reachable from browser/client-side code, or committed into the repo.\n" +
-  "5. Business-logic gaps: steps that can be skipped or replayed (e.g. granting credits/entitlements without verifying payment, webhooks without signature checks).\n\n" +
+  // The ordered procedure below replaced a generic "look for these five
+  // categories" prompt. Calibrated by hand against 80 real Lovable repos: the
+  // old wording found nothing, this one found three confirmed criticals, and
+  // all three came from step 4.
+  "WORK IN THIS ORDER. Do not read the codebase front to back.\n\n" +
+  "STEP 1 — Find the doors. List every entry point an outsider can reach directly: Supabase edge functions (supabase/functions/*), API routes, webhook handlers, server actions. Everything else is only reachable THROUGH one of these, so it is downstream. Do not review a helper or component until a door leads you there.\n\n" +
+  "STEP 2 — Rank the doors by privilege. For each, decide whether it runs with more authority than its caller. Signals: SUPABASE_SERVICE_ROLE_KEY, an admin client, a payment provider secret, a mail-sending key, any credential the caller could not use themselves. Spend your effort here. A bug in an unprivileged endpoint is a nuisance; a bug in a privileged one gives away other people's data or money.\n\n" +
+  "STEP 3 — Check the lock is real. For each privileged door, find the authorization check and confirm it (a) exists, (b) actually verifies rather than inspecting the shape of a header, and (c) runs BEFORE the privileged work. A check that the Authorization header merely starts with 'Bearer ' verifies nothing. READ THE WHOLE HANDLER before concluding: a weak-looking first check is very often followed by a real auth.getUser() a few lines later, and reporting that as a bypass is a false alarm. Also check supabase/config.toml: verify_jwt = false means the platform checks nothing, so the function must do all of it. Note the anon key IS a valid JWT and is public, so verify_jwt = true only proves the caller had a public key, not that they are a particular user.\n\n" +
+  "STEP 4 — Ask what the caller controls and what the server decides. THIS IS THE STEP THAT FINDS REAL BUGS. For each door that passes the lock, list every field arriving from the request, and for each one ask:\n" +
+  "   - Does it decide WHO the action applies to? (user id, account id, tenant id, order id, invoice id, record id)\n" +
+  "   - Does it decide HOW MUCH? (price, quantity, credit amount, discount, role or permission level)\n" +
+  "   - Does it decide WHERE IT GOES? (email recipient, phone number, callback URL, file path, redirect target)\n" +
+  "   If the caller controls any of those AND the server had a trustworthy source for the same value but used the caller's instead, that is the finding. Name the trustworthy source the code should have used.\n" +
+  "   Watch especially for a request value sitting next to a verified copy: body.userId beside a session user, or body.orderId beside an id the payment provider recorded. A fallback like `body.orderId || session.metadata.order_id` IS the bug, because the client's value wins.\n\n" +
+  "STEP 5 — Review the data layer separately. Is row level security enabled on tables holding user data, are the policies scoped to the owner rather than merely present, and are column grants narrower than the whole table? A correct row policy still leaks a column the role was granted.\n\n" +
+  "STEP 6 — Verify before reporting. For each candidate, re-read the entire path and actively try to prove yourself wrong: ask what would have to be true for this to be safe, then check whether it is. Report only what survives.\n\n" +
   "You have TWO jobs:\n" +
   "A) TRIAGE the automated linter's existing findings. That linter matches text patterns and has no understanding of the app, so it produces false positives and wrong severities. For EACH finding it reports (each has an id), open the relevant code and decide:\n" +
   "   - 'keep': the finding is real and the severity is about right.\n" +
   "   - 'downgrade': real but the impact is smaller than stated (give the correct severity). Example: a hardcoded fallback secret that only guards a non-sensitive cookie, or that can never be reached because the app validates the env var and refuses to boot without it.\n" +
   "   - 'dismiss': not actually exploitable here (give the reason with the evidence you found). Example: an 'unauthenticated route' that is actually behind middleware auth, or a webhook that does verify its signature.\n" +
-  "   Be conservative: only downgrade or dismiss when the code gives you clear evidence. When in doubt, 'keep'.\n" +
-  "B) FIND NEW issues the linter missed, that need reasoning about the app's logic.\n\n" +
-  "Look for concrete correctness mistakes in these areas (for job B, and to judge job A):\n" +
-  "- Access control / data ownership: an endpoint uses an id from the request to read or change a record without confirming it belongs to the signed-in user; missing login checks; multi-tenant data not scoped to the current tenant.\n" +
-  "- Trusting the client for server decisions: role/permission/isAdmin flags, prices, amounts, quantities, or user ids taken from the request and acted on as if reliable.\n" +
-  "- Input handling: request input used unsafely in a database query, a file path, a fetched URL, or a shell command.\n" +
-  "- Secret exposure: credentials reachable from client-side code or committed to the repo.\n" +
-  "- Business-logic gaps: steps that can be skipped or replayed (granting entitlements without verifying payment, webhooks without signature checks).\n\n" +
+  "   Judge each one on evidence rather than defaulting to 'keep'. The linter's most common error is calling a public-by-design value a leaked secret, and these are real examples from live apps that it got wrong: a Firebase web config key (AIza...) is a project identifier meant to ship in the browser, not a credential; a Google Maps BROWSER key is restricted by referrer, not by secrecy; an EmailJS service id and a payments CLIENT token are public identifiers; a committed .env holding only SUPABASE_URL and a publishable key leaked nothing, because both already ship inside the app's JavaScript. If the value is public by design, DISMISS it and say why. Conversely a name containing SERVER, ADMIN, SECRET or PRIVATE means it is not public whatever slot it sits in.\n" +
+  "   The linter also cannot read context: it matches text patterns even inside SQL comments, so a 'table' named 'if', 'to' or 'for' is a parsing artefact, not a table. Dismiss those.\n" +
+  "   When you genuinely cannot tell from the code, keep it.\n" +
+  "B) FIND NEW issues the linter missed, by working through STEPS 1 to 6 above. Step 4 is where the real ones are.\n\n" +
   "RULES:\n" +
   "1. Every judgement must be grounded in code you actually read (exact file + line). No speculation, no style nits.\n" +
   "2. For NEW findings, do not restate a linter finding; if you think a linter finding is real, that's a 'keep' in triage, not a new finding.\n" +
-  "3. Prefer a false negative over a false alarm: when unsure about a NEW issue, leave it out.\n" +
-  "4. Write text in plain language a beginner can act on.\n" +
-  "5. When done exploring, reply with ONE JSON object and nothing else (no tool call, no prose, no markdown fences):\n" +
+  "3. Prefer a false negative over a false alarm: when unsure about a NEW issue, leave it out. A false alarm in a security report costs more than a missed finding, because it teaches the reader to ignore the next one.\n" +
+  "4. Never report generic advice that isn't tied to a specific line ('add rate limiting', 'validate all input', 'use HTTPS'). If you cannot name the file, the line, and the trustworthy value the code should have used instead, it is not a finding.\n" +
+  "5. Write text in plain language a beginner can act on. For each finding say what an attacker actually does, then the smallest change that fixes it.\n" +
+  "6. When done exploring, reply with ONE JSON object and nothing else (no tool call, no prose, no markdown fences):\n" +
   '{"triage":[{"id":<number>,"verdict":"keep|downgrade|dismiss","severity":"critical|high|medium|info","reason":"evidence-based explanation (required for downgrade/dismiss)"}],' +
   '"findings":[{"severity":"critical|high|medium","title":"short title","file":"path/from/repo/root","line":<number>,"detail":"what the mistake is and how the wrong data could be reached, plain language","fix":"concrete steps to make it correct","confidence":"high|medium|low"}]}\n' +
   'Include a triage entry for every linter finding id. If there are no new issues, use an empty findings array. If there were no linter findings, use an empty triage array.';
@@ -551,13 +557,14 @@ function dedupe(aiFindings, deterministic) {
 const CLI_SYSTEM_PROMPT =
   UNTRUSTED_INPUT_RULE +
   "You are a senior software engineer doing a careful defensive code review to help a non-expert developer ship a safe app. Your goal is to make sure each user can only see and change their own data, and that untrusted input cannot make the app misbehave.\n\n" +
-  "The app's source code is in your current working directory. Use your Read, Grep, and Glob tools to inspect it. Work like a real reviewer: start from the routes/handlers and the code they call, follow the data, and READ enough to be sure before reporting. Do not guess from a file name. Do not edit anything.\n\n" +
-  "Look for concrete correctness mistakes in these areas:\n" +
-  "1. Access control / data ownership: an endpoint uses an id from the request (query, body, params, headers) to read or change a record without confirming it belongs to the signed-in user; missing login checks; multi-tenant data not scoped to the current tenant.\n" +
-  "2. Trusting the client for server decisions: role/permission/isAdmin flags, prices, amounts, quantities, or user ids taken from the request and acted on as if reliable.\n" +
-  "3. Input handling: request input used unsafely in a database query, a file path, a URL the server fetches, or a shell command.\n" +
-  "4. Secret exposure: API keys or credentials reachable from browser/client-side code, or committed into the repo.\n" +
-  "5. Business-logic gaps: steps that can be skipped or replayed (e.g. granting entitlements without verifying payment, webhooks without signature checks).\n\n" +
+  "The app's source code is in your current working directory. Use your Read, Grep, and Glob tools to inspect it. Do not edit anything.\n\n" +
+  "WORK IN THIS ORDER. Do not read the codebase front to back.\n\n" +
+  "STEP 1 — Find the doors: every entry point an outsider reaches directly (supabase/functions/*, API routes, webhooks, server actions). Everything else is downstream of one of these.\n" +
+  "STEP 2 — Rank them by privilege: which run with more authority than their caller (SUPABASE_SERVICE_ROLE_KEY, admin clients, payment or mail secrets)? Spend your effort there.\n" +
+  "STEP 3 — Check the lock is real: it must exist, actually verify rather than inspect the shape of a header, and run BEFORE the privileged work. READ THE WHOLE HANDLER first, because a weak-looking check is often followed by a real auth.getUser() a few lines down, and calling that a bypass is a false alarm. Check supabase/config.toml too: verify_jwt = false means the platform checks nothing. The anon key is a valid JWT and is public, so verify_jwt = true proves only that the caller had a public key.\n" +
+  "STEP 4 — THE STEP THAT FINDS REAL BUGS. For each door, list every field coming from the request and ask whether it decides WHO the action applies to (user/order/invoice/record id), HOW MUCH (price, quantity, credits, role), or WHERE IT GOES (email recipient, phone, callback URL, file path). If the caller controls one of those and the server had a trustworthy source but used the caller's value instead, that is the finding. `body.orderId || session.metadata.order_id` IS the bug, because the client's value wins.\n" +
+  "STEP 5 — Review the data layer separately: RLS enabled, policies scoped to the owner rather than merely present, column grants narrower than the table.\n" +
+  "STEP 6 — Verify before reporting: re-read the whole path and try to prove yourself wrong. Report only what survives.\n\n" +
   "You have TWO jobs:\n" +
   "A) TRIAGE the automated linter's existing findings (each has an id). It matches text patterns with no understanding of the app, so it produces false positives and wrong severities. For EACH finding, open the relevant code and decide 'keep' (real, severity about right), 'downgrade' (real but smaller impact; give the correct severity), or 'dismiss' (not actually exploitable here; give the evidence). Be conservative: only downgrade or dismiss with clear code evidence; when in doubt, 'keep'.\n" +
   "B) FIND NEW issues the linter missed that need reasoning about the app's logic.\n\n" +
